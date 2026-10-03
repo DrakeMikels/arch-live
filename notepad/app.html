@@ -264,6 +264,11 @@
   .modal h3 { margin: 0 0 4px; font-size: 14px; }
   .modal textarea { width: 100%; min-height: 90px; border: 1px solid var(--rule); border-radius: 8px; padding: 8px 10px; background: var(--nodeFill); outline: 0; margin: 10px 0; }
   .modal .row { display: flex; gap: 8px; justify-content: flex-end; align-items: center; }
+  .modal .card.ask { width: min(460px, 92vw); }
+  .modal .card.ask input { width: 100%; border: 1px solid var(--rule); border-radius: 8px; padding: 8px 10px; background: var(--nodeFill); outline: 0; margin: 12px 0; }
+  .modal .card.ask input:focus, .modal .card.ask textarea:focus { border-color: var(--accent); }
+  .modal .card.ask .row .hint { margin-right: auto; }
+  .btn.accent.danger { background: #d9363e; border-color: #d9363e; color: #fff; }
   .modal img { max-width: 100%; max-height: 220px; border: 1px solid var(--rule); border-radius: 8px; display: block; margin: 8px 0; background: var(--paper); }
 
   /* Standup */
@@ -412,6 +417,15 @@
       </div>
     </section>
   </main>
+</div>
+<div class="modal" id="askModal" role="dialog" aria-modal="true" aria-labelledby="askTitle">
+  <div class="card ask">
+    <h3 id="askTitle"></h3>
+    <div class="hint" id="askBody"></div>
+    <input id="askInput" autocomplete="off">
+    <textarea id="askArea" rows="3"></textarea>
+    <div class="row"><span class="hint" id="askKeys"></span><button class="btn" id="askCancel">Cancel</button><button class="btn accent" id="askOk">OK</button></div>
+  </div>
 </div>
 <div class="modal" id="sendModal">
   <div class="card">
@@ -1325,9 +1339,7 @@ $('#map').addEventListener('click', async e => {
   if (node) {
     const id = node.dataset.mnode
     if (e.altKey) {
-      const why = prompt(`Mark ${mapData.nodes.find(n => n.id === id)?.label ?? id}: why it matters (optional)`)
-      if (why !== null) { await api('/api/note', { type: 'mark', text: why.trim() || '·', component: id }); toast('Marked') }
-      return
+      return markComponent(id)
     }
     // The drawer opens first, so the canvas is measured at its new width.
     if (drawer?.id !== id) await openDrawer(id)
@@ -2051,6 +2063,57 @@ $('#sendNote').addEventListener('keydown', e => { if (e.key === 'Enter' && (e.me
 
 /* ---------- Shared ---------- */
 
+/* ---------- The notepad's own dialogs ---------- */
+
+// In place of the browser's prompt and confirm: same keys (Enter or ⌘↵ to
+// accept, Esc to cancel), styled like the rest of the notepad.
+let askDone = null
+const closeAsk = value => {
+  $('#askModal').classList.remove('on')
+  const done = askDone
+  askDone = null
+  done?.(value)
+}
+const askDialog = ({ title, body = '', value = '', placeholder = '', ok = 'OK', isMultiline = false, isConfirm = false, isDanger = false }) =>
+  new Promise(resolve => {
+    if (askDone) closeAsk(null)
+    askDone = resolve
+    $('#askTitle').textContent = title
+    $('#askBody').textContent = body
+    $('#askBody').hidden = !body
+    const input = $('#askInput'); const area = $('#askArea')
+    input.hidden = isConfirm || isMultiline
+    area.hidden = isConfirm || !isMultiline
+    const field = isMultiline ? area : input
+    field.value = value
+    field.placeholder = placeholder
+    $('#askOk').textContent = ok
+    $('#askOk').classList.toggle('danger', isDanger)
+    $('#askKeys').textContent = isConfirm ? '↵ ok · Esc cancel' : isMultiline ? '⌘↵ save · Esc cancel' : '↵ save · Esc cancel'
+    $('#askModal').classList.add('on')
+    setTimeout(() => (isConfirm ? $('#askOk') : field).focus(), 0)
+    if (!isConfirm) field.select()
+  })
+const askText = opts => askDialog(opts)
+const askConfirm = opts => askDialog({ ...opts, isConfirm: true }).then(v => v === true)
+$('#askOk').addEventListener('click', () => closeAsk($('#askInput').hidden && $('#askArea').hidden ? true : (!$('#askArea').hidden ? $('#askArea').value : $('#askInput').value)))
+$('#askCancel').addEventListener('click', () => closeAsk(null))
+$('#askModal').addEventListener('click', e => { if (e.target === $('#askModal')) closeAsk(null) })
+$('#askModal').addEventListener('keydown', e => {
+  e.stopPropagation()
+  if (e.key === 'Escape') { e.preventDefault(); closeAsk(null) }
+  const isArea = e.target === $('#askArea')
+  if (e.key === 'Enter' && (!isArea || e.metaKey || e.ctrlKey)) { e.preventDefault(); $('#askOk').click() }
+})
+// Marking a component: a short note on why it matters, drawn on the map.
+const markComponent = async id => {
+  const name = mapData?.nodes.find(n => n.id === id)?.label ?? data?.meta?.nodes?.find(n => n.id === id)?.label ?? id
+  const why = await askText({ title: `Mark ${name}`, body: 'Why it matters (optional). It shows above the component on the map and in today\'s journal.', placeholder: 'e.g. webhook retries are flaky', ok: 'Mark' })
+  if (why === null) return
+  await api('/api/note', { type: 'mark', text: why.trim() || '·', component: id })
+  toast('Marked')
+}
+
 /* ---------- Editing your notes ---------- */
 
 // Your own entries (notes, todos, blockers, decisions) edit in place; the
@@ -2080,7 +2143,11 @@ const listSel = ta => {
   ta.setRangeText(lines.map(l => (isList ? l.replace(/^\s*[-*] /, '') : `- ${l}`)).join('\n'), start, stop, 'select')
   ta.focus(); ta.dispatchEvent(new Event('input'))
 }
-const linkSel = ta => { const url = prompt('Link address', 'https://'); if (url && /^https?:\/\//.test(url)) wrapSel(ta, '[', `](${url})`) }
+const linkSel = async ta => {
+  const url = await askText({ title: 'Add a link', body: 'The selected text becomes the link.', value: 'https://', ok: 'Add link' })
+  if (url && /^https?:\/\//.test(url.trim())) wrapSel(ta, '[', `](${url.trim()})`)
+  else ta.focus()
+}
 const FORMAT = { bold: ta => wrapSel(ta, '**'), italic: ta => wrapSel(ta, '_'), code: ta => wrapSel(ta, '`'), list: listSel, link: linkSel }
 // ⌘B bold, ⌘I italic, ⌘E code, ⌘K link, in the editor and the composer.
 const formatKeys = (e, ta) => {
@@ -2129,7 +2196,8 @@ const saveEdit = async () => {
 }
 const deleteEdit = async () => {
   const e = findEntry(editingId)
-  if (!confirm(`Delete this ${e?.type ?? 'note'} from the journal?`)) return
+  const isSure = await askConfirm({ title: `Delete this ${e?.type ?? 'note'}?`, body: 'It leaves the journal. The change is kept as an event, like an edit.', ok: 'Delete', isDanger: true })
+  if (!isSure) return
   const res = await api('/api/remove', { ref: editingId })
   editingId = null
   editingRow = null
@@ -2334,9 +2402,7 @@ document.addEventListener('click', async e => {
     }
     if (t.closest('[data-part-close]')) { drawer.part = null; renderDrawer(); return renderDiagram() }
     if (t.closest('#drawerMark')) {
-      const why = prompt(`Mark ${drawer.data.node.label}: why it matters (optional)`)
-      if (why !== null) { await api('/api/note', { type: 'mark', text: why.trim() || '·', component: drawer.id }); toast('Marked') }
-      return
+      return markComponent(drawer.id)
     }
     const folder = t.closest('[data-folder]')
     if (folder) { const d = folder.dataset.folder; drawer.expanded.has(d) ? drawer.expanded.delete(d) : drawer.expanded.add(d); return renderDrawer() }
@@ -2347,7 +2413,7 @@ document.addEventListener('click', async e => {
 $('#days').addEventListener('dblclick', async e => {
   const id = e.target.closest('[data-session]')?.dataset.session
   if (!id) return
-  const name = prompt('Name this session', sessionName(id))
+  const name = await askText({ title: 'Rename session', body: 'The sidebar, boards and standups use this name.', value: sessionName(id), ok: 'Rename' })
   if (!name?.trim()) return
   const res = await api('/api/session', { id, name: name.trim() })
   if (res.ok) { toast('Renamed'); load() } else toast(res.error ?? 'Could not rename')

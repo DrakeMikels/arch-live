@@ -477,8 +477,12 @@ const server = http.createServer(async (req, res) => {
       return found ? send(res, 200, found) : send(res, 404, { error: 'no such component' })
     }
     if (req.method === 'GET' && url.pathname === '/api/graph') {
-      const m = meta()
-      return send(res, 200, { ...(await workspace.map()), marks: m.marks ?? {}, active: m.active ?? [] })
+      // Marks come from today's journal, so a new one shows at once; what
+      // Claude is working in comes from the mod.
+      const today = recent().find(d => d.date === dateKey(Date.now()))
+      const marks = {}
+      for (const e of today?.entries ?? []) if (e.type === 'mark' && e.component && !e.done) marks[e.component] = e.text === '·' ? 'marked' : e.text
+      return send(res, 200, { ...(await workspace.map()), marks, active: meta().active ?? [] })
     }
     if (req.method === 'GET' && url.pathname === '/api/symbols') return send(res, 200, workspace.symbols(url.searchParams.get('path') ?? ''))
     if (req.method === 'POST' && url.pathname === '/api/ask') {
