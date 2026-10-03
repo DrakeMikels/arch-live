@@ -103,6 +103,11 @@ const carryAtom = atom({ plugin: 'arch-live', key: 'carry' } as const, null)
 const pendingAtom = atom({ plugin: 'arch-live', key: 'pending' } as const, null)
 const markTargetAtom = atom({ plugin: 'arch-live', key: 'markTarget' } as const, null)
 const notepadAtom = atom({ plugin: 'arch-live', key: 'notepad' } as const, null)
+const mapAskedAtom = atom({ plugin: 'arch-live', key: 'mapAskedAt' } as const, null)
+
+// A pane button's work, with any failure said in a toast instead of lost.
+const act = ($: EngineInterface, what: string, work: () => Promise<unknown>) =>
+  work().catch(err => $.ui.toast(`arch-live: ${what} did not work (${errorText(err)})`))
 
 const SECTION = {
   id: 'arch-live:guide',
@@ -681,6 +686,8 @@ const startMap = async ($: EngineInterface, folder: string) => {
   await update($, rootGuessAtom, () => false)
   await update($, askAtom, () => null)
   submitSoon($, mapPrompt(root))
+  const askedAt = await $.clock.now()
+  await update($, mapAskedAtom, () => askedAt)
   // The prompt waits while Claude is busy; say so, or the button looks dead.
   $.ui.toast(`arch-live: asked Claude to map ${root.split('/').pop()}; it starts when Claude is free`)
   void openPane($)
@@ -1390,6 +1397,7 @@ export const register: Register = on => {
 
   on('tool.call', { tool: UPDATE_TOOL }, async ($, e) => {
     const args = e as unknown as UpdateArgs
+    await update($, mapAskedAtom, () => null)
     if (args.root !== undefined) {
       const root = await absRoot($, cleanRoot(args.root))
       await update($, rootGuessAtom, () => false)
@@ -1800,6 +1808,9 @@ export const register: Register = on => {
     const room = Math.max(280, e.props.bodyColumns * CELL_PX - 16)
     const overlay: Overlay = { marks: marksOf(await recentDays($)), active }
     const drawing = renderSvg(graph, theme, room, overlay)
+    // A Re-map request shows until the map is updated, or for half an hour.
+    const askedAt = await read($, mapAskedAtom)
+    const mapAskedAt = askedAt && (await $.clock.now()) - askedAt < 30 * 60_000 ? askedAt : null
     const width = Math.round(Math.min(room, drawing.width * 1.5))
     const height = Math.round((width * drawing.height) / drawing.width)
     let marker = <Text dimColor>Mark a component from the notepad.</Text>
@@ -1821,9 +1832,12 @@ export const register: Register = on => {
       <Box flexDirection="column" gap={1}>
         {tabs}
         <Svg source={drawing.svg} alt={drawing.alt} width={width} height={height} />
+        {mapAskedAt ? (
+          <Text key="map-asked" dimColor>{`Re-map requested at ${timeLabel(mapAskedAt)} · Claude starts as soon as it is free, and the map redraws when it is done.`}</Text>
+        ) : null}
         <Box flexDirection="row" gap={1} flexWrap="wrap">
           {marker}
-          <Button key="map" label={graph ? 'Re-map' : 'Map a project'} onPress={() => startMap($, '')} />
+          <Button key="map" label={graph ? 'Re-map' : 'Map a project'} onPress={() => act($, 'Re-map', () => startMap($, ''))} />
           <Button key="theme" label="Style…" onPress={() => update($, askAtom, () => 'brand')} />
           <Button
             key="export"
@@ -1937,7 +1951,7 @@ export const register: Register = on => {
     return (
       <Box flexDirection="row" columnGap={1}>
         <Text dimColor>arch-live · this repo has no architecture map yet.</Text>
-        <Button key="map-now" label="Map it" variant="primary" onPress={() => startMap($, '')} />
+        <Button key="map-now" label="Map it" variant="primary" onPress={() => act($, 'Map it', () => startMap($, ''))} />
         <Button
           key="map-never"
           label="Not for this repo"

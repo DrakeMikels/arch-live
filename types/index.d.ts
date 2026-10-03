@@ -188,6 +188,8 @@ declare module 'claude-code' {
       markTarget: string | null
       /** The local notepad's address once it runs. */
       notepad: string | null
+      /** When Re-map last asked Claude, until the map is next updated. */
+      mapAskedAt: number | null
     }
   }
 }
