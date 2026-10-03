@@ -16,7 +16,7 @@
       "order": 1,
       "sublabel": "Pane · band · /commands",
       "path": "hooks/register.tsx",
-      "line": 1166
+      "line": 1172
     },
     {
       "id": "browser",
@@ -32,7 +32,7 @@
       "files": {
         "notepad/app.html": {
           "summary": "Single-file browser app: journal, component drawer, whiteboard, standup.",
-          "at": 1791041432375
+          "at": 1791041806432
         }
       }
     },
@@ -43,7 +43,7 @@
       "order": 3,
       "sublabel": "register.tsx · tools · capture",
       "path": "hooks/register.tsx",
-      "line": 871,
+      "line": 877,
       "owns": [
         "hooks/register.tsx",
         "types",
@@ -52,19 +52,19 @@
       "files": {
         "hooks/register.tsx": {
           "summary": "Every hook: map tools, journal capture, commands, pane and refresh.",
-          "at": 1791041428221
+          "at": 1791041802606
         },
         "hooks/hooks.json": {
           "summary": "Points Claude Code at the hooks module.",
-          "at": 1791041428221
+          "at": 1791041802606
         },
         "types/index.d.ts": {
           "summary": "Shared types and the mod's $.state contract.",
-          "at": 1791041428221
+          "at": 1791041802606
         },
         ".claude-plugin/plugin.json": {
           "summary": "Plugin manifest: name, version and type contract.",
-          "at": 1791041428221
+          "at": 1791041802606
         }
       }
     },
@@ -83,11 +83,11 @@
       "files": {
         "hooks/render.ts": {
           "summary": "Lays out tiers and draws the SVG, marks and active dots.",
-          "at": 1791041429371
+          "at": 1791041803510
         },
         "hooks/theme.ts": {
           "summary": "Default design tokens, theme normalising and contrast warnings.",
-          "at": 1791041429371
+          "at": 1791041803510
         }
       }
     },
@@ -106,11 +106,11 @@
       "files": {
         "hooks/journal.ts": {
           "summary": "Day files, done events, carry-forward and the standup brief.",
-          "at": 1791041430486
+          "at": 1791041804630
         },
         "hooks/ste.ts": {
           "summary": "Simplified Technical English distiller for turn summaries.",
-          "at": 1791041430486
+          "at": 1791041804630
         }
       }
     },
@@ -129,11 +129,11 @@
       "files": {
         "notepad/server.mjs": {
           "summary": "Token-guarded local server: notepad API, live events, asks to Claude.",
-          "at": 1791041431707
+          "at": 1791041805735
         },
         "notepad/workspace.mjs": {
           "summary": "Component file trees from git, symbol outlines and saved boards.",
-          "at": 1791041431707
+          "at": 1791041805735
         }
       }
     },
@@ -232,5 +232,5 @@
     "mod-hooks",
     "notepad-server"
   ],
-  "updatedAt": 1791041423589
+  "updatedAt": 1791041798708
 }

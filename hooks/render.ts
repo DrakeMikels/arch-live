@@ -363,10 +363,15 @@ const layout = (graph: ArchGraph | null, theme: ArchTheme, orientation: Orientat
     : 'NO COMPONENTS YET — MAP THE REPO OR START BUILDING'
 
   const vars = (r: Roles) => Object.entries(r).map(([k, val]) => `--${k}:${val}`).join(';')
+  // A page holding the SVG can force a mode with data-theme on any ancestor
+  // (the notepad's light/dark toggle); on its own, the SVG follows its mode.
+  const light = vars(roles(theme.light))
+  const dark = vars(roles(theme.dark))
+  const forced = `[data-theme="light"] svg{${light}}[data-theme="dark"] svg{${dark}}`
   const css =
     theme.mode === 'auto'
-      ? `svg{${vars(roles(theme.light))}}@media (prefers-color-scheme: dark){svg{${vars(roles(theme.dark))}}}`
-      : `svg{${vars(base)}}`
+      ? `svg{${light}}@media (prefers-color-scheme: dark){svg{${dark}}}${forced}`
+      : `svg{${vars(base)}}${forced}`
 
   const marker = (color: string) =>
     `<marker id="arrow-${color}" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L8,4 L0,8 z" style="fill:${v(color)}"/></marker>`

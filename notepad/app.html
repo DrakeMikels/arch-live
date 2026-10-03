@@ -26,6 +26,8 @@
   .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--soft); }
   .live.on .dot { background: var(--accent); animation: pulse 1.6s infinite; }
   @keyframes pulse { 50% { opacity: .3; } }
+  .mode { border: 1px solid var(--rule); background: none; border-radius: 7px; padding: 3px 10px; cursor: pointer; color: var(--muted); font-size: 12px; white-space: nowrap; }
+  .mode:hover { color: var(--ink); border-color: var(--muted); }
   .tabs { display: flex; gap: 2px; margin-left: auto; background: var(--paper2); padding: 3px; border-radius: 8px; }
   .tabs button { border: 0; background: none; padding: 5px 14px; border-radius: 6px; cursor: pointer; color: var(--muted); }
   .tabs button[aria-selected="true"] { background: var(--nodeFill); color: var(--ink); box-shadow: 0 0 0 1px var(--rule); }
@@ -170,6 +172,7 @@
       <button role="tab" data-tab="board" aria-selected="false">Board <kbd>3</kbd></button>
       <button role="tab" data-tab="standup" aria-selected="false">Standup <kbd>4</kbd></button>
     </div>
+    <button class="mode" id="mode" title="Light, dark, or follow the system">◐ Auto</button>
   </header>
   <nav><h2>Days</h2><div id="days"></div></nav>
   <main>
@@ -278,13 +281,39 @@ let date = null
 let tab = 'journal'
 let type = 'note'
 
+// Light or dark: the viewer's choice (Auto, Light, Dark, kept in this browser),
+// else the theme's own mode, else the system setting. data-theme on <html>
+// also drives the diagram SVG, which reads it.
+const MODES = { auto: '◐ Auto', light: '☀ Light', dark: '☾ Dark' }
+let viewMode = (() => { try { return localStorage.getItem('arch-live-mode') || 'auto' } catch { return 'auto' } })()
+let savedTheme = null
+const systemDark = matchMedia('(prefers-color-scheme: dark)')
+const shownMode = () => document.documentElement.dataset.theme || (systemDark.matches ? 'dark' : 'light')
+
 const applyTheme = theme => {
-  if (!theme) return
+  if (theme) savedTheme = theme
+  const t = savedTheme
+  const forced = viewMode !== 'auto' ? viewMode : t && t.mode !== 'auto' ? t.mode : null
+  if (forced) document.documentElement.dataset.theme = forced
+  else delete document.documentElement.dataset.theme
+  $('#mode').textContent = MODES[viewMode] ?? MODES.auto
+  if (!t) return
   const vars = p => Object.entries(p).map(([k, v]) => `--${k}:${v}`).join(';')
-  const font = theme.fonts?.sans ? `--font:${theme.fonts.sans};` : ''
-  const dark = theme.mode === 'light' ? '' : `@media (prefers-color-scheme: dark){:root{${vars(theme.dark)}}}`
-  $('#theme').textContent = theme.mode === 'dark' ? `:root{${vars(theme.dark)};${font}}` : `:root{${vars(theme.light)};${font}}${dark}`
+  const font = t.fonts?.sans ? `--font:${t.fonts.sans};` : ''
+  $('#theme').textContent = `:root{${vars(t.light)};${font}}` +
+    `@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){${vars(t.dark)}}}` +
+    `:root[data-theme="dark"]{${vars(t.dark)}}`
 }
+
+// The board draws with resolved colors, so it redraws when the mode changes.
+const modeChanged = () => { if (tab === 'board') { renderTools(); drawBoard() } }
+$('#mode').addEventListener('click', () => {
+  viewMode = { auto: 'light', light: 'dark', dark: 'auto' }[viewMode] ?? 'auto'
+  try { localStorage.setItem('arch-live-mode', viewMode) } catch {}
+  applyTheme()
+  modeChanged()
+})
+systemDark.addEventListener('change', () => { if (!document.documentElement.dataset.theme) modeChanged() })
 const cssVar = name => getComputedStyle(document.documentElement).getPropertyValue(`--${name}`).trim()
 
 const label = id => (id && data?.labels?.[id]) || id || ''
@@ -896,7 +925,7 @@ const zoomBy = f => { const r = svgEl.getBoundingClientRect(); const cx = r.widt
 const boardPng = async () => {
   const b = contentBox(); const pad = 40
   const w = b.w + pad * 2; const h = b.h + pad * 2
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${b.x - pad} ${b.y - pad} ${w} ${h}" width="${w * 2}" height="${h * 2}"><rect x="${b.x - pad}" y="${b.y - pad}" width="${w}" height="${h}" fill="${cssVar('paper')}"/>${board.underlay ? underlaySvg : ''}${board.items.map(itemSvg).join('')}</svg>`
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${b.x - pad} ${b.y - pad} ${w} ${h}" width="${w * 2}" height="${h * 2}"><rect x="${b.x - pad}" y="${b.y - pad}" width="${w}" height="${h}" fill="${cssVar('paper')}"/><g data-theme="${shownMode()}">${board.underlay ? underlaySvg : ''}</g>${board.items.map(itemSvg).join('')}</svg>`
   const img = new Image()
   img.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`
   await img.decode()
