@@ -170,7 +170,7 @@
   .standup .bar select { border: 1px solid var(--rule); border-radius: 7px; background: var(--nodeFill); padding: 4px 8px; }
   .written { border: 1px solid var(--rule); border-left: 3px solid var(--accent); border-radius: 8px; padding: 12px 16px; margin-bottom: 18px; background: var(--nodeFill); }
   .written .stamp { color: var(--soft); font-size: 11px; margin-bottom: 6px; }
-  .written.stale .stamp::after { content: ' · older than the last standup'; }
+  .written.stale .stamp::after { content: ' · from before you started fresh'; }
   details.brief summary { cursor: pointer; color: var(--soft); font-size: 11px; letter-spacing: .14em; text-transform: uppercase; margin-bottom: 6px; }
   .md h1 { font-size: 17px; margin: 0 0 4px; }
   .md h2 { font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: var(--soft); margin: 22px 0 6px; font-weight: 500; }
@@ -268,7 +268,7 @@
           <button class="btn accent" id="writeStandup" title="Claude writes your standup notes from the journal">✦ Write with Claude</button>
           <select id="standupScope" aria-label="What to cover"><option value="all">All sessions</option><option value="session">This session</option></select>
           <button class="btn primary" id="copyStandup">Copy for Slack</button>
-          <button class="btn" id="given">Mark as given</button>
+          <button class="btn" id="given" title="After your meeting: the next standup covers only what happens from now on. Open todos and blockers carry over.">Start fresh from now</button>
         </div>
         <div id="written"></div>
         <details class="brief" id="briefBox" open><summary>Journal brief</summary><div class="md" id="standup"></div></details>
@@ -1325,7 +1325,7 @@ $('#copyDay').addEventListener('click', async () => {
   toast('Day copied')
 })
 $('#copyStandup').addEventListener('click', async () => { await navigator.clipboard.writeText(standupCopy); toast('Standup copied') })
-$('#given').addEventListener('click', async () => { await api('/api/standup/given', {}); toast('Next standup starts from now'); renderStandup() })
+$('#given').addEventListener('click', async () => { await api('/api/standup/given', {}); toast('Started fresh: your next standup covers only what happens from now'); renderStandup() })
 
 document.addEventListener('keydown', e => {
   if (e.key === ' ' && tab === 'board' && !isTyping(e)) { spaceHeld = true; svgEl.style.cursor = 'grab'; e.preventDefault(); return }

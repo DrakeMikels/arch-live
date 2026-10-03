@@ -1347,11 +1347,11 @@ export const register: Register = on => {
             />
             <Button
               key="standup-given"
-              label="Mark as given"
+              label="Start fresh from now"
               onPress={async () => {
                 await markStandupGiven($)
                 await refreshJournal($)
-                $.ui.toast('Next standup starts from now')
+                $.ui.toast('Started fresh: your next standup covers only what happens from now')
               }}
             />
           </Box>
