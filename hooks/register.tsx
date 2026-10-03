@@ -1079,6 +1079,8 @@ export const register: Register = on => {
     // Open again (a resumed session included), so it can take boards.
     await changeSession($, ({ endedAt: _ended, ...open }) => open).catch(() => undefined)
     await refreshJournal($).catch(() => undefined)
+    // A mapped project's notepad is up while a session is, so an open tab reconnects.
+    if (graph) void ensureNotepad($).catch(() => undefined)
     // A session left open past midnight moves its Journal to the new day.
     let shownDay = dateKey(await $.clock.now())
     $.clock.every(60_000, () => {

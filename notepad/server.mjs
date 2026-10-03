@@ -44,7 +44,20 @@ if (!LOGS || !PROJECT) {
 }
 fs.mkdirSync(LOGS, { recursive: true })
 
-const TOKEN = randomBytes(12).toString('hex')
+// The same address every time for a project: a port from its logs folder and
+// a token kept in it, so an open tab or a bookmark survives restarts.
+const stored = (() => {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(LOGS, 'notepad.json'), 'utf8'))
+  } catch {
+    return {}
+  }
+})()
+const TOKEN = typeof stored.token === 'string' && /^[a-f0-9]{24}$/.test(stored.token) ? stored.token : randomBytes(12).toString('hex')
+if (TOKEN !== stored.token) fs.writeFileSync(path.join(LOGS, 'notepad.json'), `${JSON.stringify({ token: TOKEN }, null, 2)}\n`, { mode: 0o600 })
+let hash = 0
+for (const ch of path.resolve(LOGS)) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0
+const STABLE_PORT = 47100 + (hash % 1000)
 const DAY_MS = 24 * 60 * 60 * 1000
 const NOTE_TYPES = new Set(['note', 'todo', 'blocker', 'decision', 'mark'])
 
@@ -138,6 +151,41 @@ const state = date => {
     open: openItems(days),
     labels: Object.fromEntries(labelsFrom(days, g)),
   }
+}
+
+// Every day ever logged, newest first: entries whose text holds every word of
+// the query (requests, summaries, notes, reasons, files, components, session).
+const search = q => {
+  const words = String(q).toLowerCase().split(/\s+/).filter(Boolean).slice(0, 8)
+  if (!words.length) return { hits: [], total: 0 }
+  const days = loadDays('0000-00-00')
+  const labels = labelsFrom(days, graph())
+  const names = sessionNames()
+  const hits = []
+  for (const day of [...days].reverse()) {
+    for (const e of [...day.entries].sort((a, b) => b.ts - a.ts)) {
+      if (e.type === 'done') continue
+      const hay = [
+        e.request, ...(e.summary ?? []), e.text, e.why, e.alternatives,
+        ...(e.files ?? []).map(f => f.path),
+        ...(e.components ?? []).map(c => labels.get(c) ?? c),
+        e.component ? (labels.get(e.component) ?? e.component) : '',
+        e.session ? names[e.session] : '',
+      ].filter(Boolean).join(' ').toLowerCase()
+      if (!words.every(w => hay.includes(w))) continue
+      hits.push({
+        date: day.date,
+        id: e.id,
+        ts: e.ts,
+        type: e.type,
+        title: e.request ?? e.text ?? '',
+        detail: e.type === 'turn' ? (e.summary ?? []).join(' ') : (e.why ? `because ${e.why}` : ''),
+        session: e.session ?? null,
+        done: !!e.done,
+      })
+    }
+  }
+  return { hits: hits.slice(0, 150), total: hits.length }
 }
 
 const workspace = createWorkspace({ project: PROJECT, logs: LOGS, graph, recent })
@@ -247,6 +295,7 @@ const server = http.createServer(async (req, res) => {
       return
     }
     if (req.method === 'GET' && url.pathname === '/api/state') return send(res, 200, state(url.searchParams.get('date')))
+    if (req.method === 'GET' && url.pathname === '/api/search') return send(res, 200, search(url.searchParams.get('q') ?? ''))
     if (req.method === 'GET' && url.pathname === '/api/standup') {
       return send(res, 200, { markdown: standup(), written: readJson(path.join(LOGS, 'standup-written.json'), null), last: Number(readJson(path.join(LOGS, 'standup.json'), {}).last ?? 0), hasSession: !!SELF })
     }
@@ -343,10 +392,18 @@ const server = http.createServer(async (req, res) => {
   }
 })
 
-server.listen(0, '127.0.0.1', () => {
+// Another session on the project may hold the port already; then any free one.
+server.on('error', err => {
+  if (err.code === 'EADDRINUSE' && server.listening === false && !server.triedFree) {
+    server.triedFree = true
+    server.listen(0, '127.0.0.1')
+  } else throw err
+})
+server.on('listening', () => {
   const { port } = server.address()
   console.log(`NOTEPAD http://127.0.0.1:${port}/?t=${TOKEN}`)
 })
+server.listen(STABLE_PORT, '127.0.0.1')
 
 // The mod's session owns this process; when its pipe closes, stop.
 process.stdout.on('error', () => process.exit(0))

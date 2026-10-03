@@ -84,6 +84,16 @@
   .daytitle { display: flex; align-items: baseline; gap: 12px; margin: 22px 0 6px; }
   .daytitle h2 { font-size: 15px; margin: 0; }
   .daytitle button { margin-left: auto; }
+  .daytitle .search { margin-left: auto; width: min(280px, 40%); border: 1px solid var(--rule); border-radius: 7px; padding: 4px 10px; background: var(--nodeFill); outline: 0; }
+  .daytitle .search:focus { border-color: var(--accent); }
+  .daytitle .search + button { margin-left: 0; }
+  .entry.hit { cursor: pointer; border-radius: 6px; }
+  .entry.hit:hover { background: var(--paper2); }
+  .entry.hit time { line-height: 1.3; }
+  .entry .detail { color: var(--muted); margin-top: 2px; }
+  mark { background: var(--accentTint); color: var(--ink); box-shadow: inset 0 -2px 0 var(--accent); border-radius: 2px; }
+  .entry.flash { animation: flash 1.6s ease-out; }
+  @keyframes flash { 0%, 30% { background: var(--accentTint); } 100% { background: transparent; } }
   .entry { display: grid; grid-template-columns: 64px 1fr; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--rule); }
   .entry time { color: var(--soft); font-size: 11px; padding-top: 2px; }
   .entry .what { font-weight: 600; }
@@ -220,7 +230,7 @@
           <textarea class="note" id="input" rows="1" placeholder="Jot a note… (@component to tag it)"></textarea>
         </div>
         <div class="suggest" id="suggest"></div>
-        <div class="daytitle"><h2 id="dayTitle">Today</h2><span class="hint" id="dayMeta"></span><button class="btn" id="copyDay">Copy day</button></div>
+        <div class="daytitle"><h2 id="dayTitle">Today</h2><span class="hint" id="dayMeta"></span><input class="search" id="search" type="search" placeholder="Search every day…  /" aria-label="Search the journal"><button class="btn" id="copyDay">Copy day</button></div>
         <div id="entries"></div>
       </div>
       <div class="gutter" data-pane="rail"><button data-collapse="rail" title="Hide this panel">›</button></div>
@@ -468,7 +478,7 @@ const renderJournal = () => {
       const chips = e.components.map(c => `<span class="chip">${esc(label(c))}</span>`).join('')
       const files = e.files.length ? `<details><summary>${e.files.length} file${e.files.length > 1 ? 's' : ''}${e.commands ? ` · ${e.commands} command${e.commands > 1 ? 's' : ''}` : ''}</summary>${e.files.map(f => `<div>${f.created ? '+ ' : '~ '}<code>${esc(f.path)}</code></div>`).join('')}</details>` : ''
       const arch = e.arch ? `<div class="hint">Map: ${e.arch.added.length ? `added ${esc(e.arch.added.join(', '))}` : ''}${e.arch.removed.length ? ` removed ${esc(e.arch.removed.join(', '))}` : ''}</div>` : ''
-      return `<div class="entry"><time>${time(e.ts)}</time><div><span class="what">${inline(e.request)}</span>${chips}${sessionChip(e)}<ul>${e.summary.map(s => `<li>${inline(s)}</li>`).join('')}</ul>${arch}${files}</div></div>`
+      return `<div class="entry" data-entry="${esc(e.id)}"><time>${time(e.ts)}</time><div><span class="what">${inline(e.request)}</span>${chips}${sessionChip(e)}<ul>${e.summary.map(s => `<li>${inline(s)}</li>`).join('')}</ul>${arch}${files}</div></div>`
     }
     const checkable = e.type === 'todo' || e.type === 'blocker'
     const icon = checkable ? `<input type="checkbox" class="check" data-done="${e.id}" ${e.done ? 'checked disabled' : ''}>` : `<span class="icon">${ICON[e.type] ?? '•'}</span>`
@@ -477,7 +487,7 @@ const renderJournal = () => {
     const chip = e.component ? `<span class="chip">${esc(label(e.component))}</span>` : ''
     const by = e.by === 'claude' ? '<span class="badge">Claude</span>' : ''
     const kind = e.type === 'note' ? '' : `<span class="badge">${e.type}</span>`
-    return `<div class="entry note-row ${e.done ? 'done' : ''}"><time>${time(e.ts)}</time><div>${icon}<span class="text">${inline(e.text)}</span>${why}${alt}${chip}${sessionChip(e)}${kind}${by}</div></div>`
+    return `<div class="entry note-row ${e.done ? 'done' : ''}" data-entry="${esc(e.id)}"><time>${time(e.ts)}</time><div>${icon}<span class="text">${inline(e.text)}</span>${why}${alt}${chip}${sessionChip(e)}${kind}${by}</div></div>`
   }).join('') : `<div class="empty">${data.date === today ? 'Nothing logged yet today. Notes you add here, /n in Claude Code, and each Claude turn show up live.' : 'Nothing logged this day.'}</div>`
 
   $('#open').innerHTML = open.length ? open.map(n =>
@@ -1173,11 +1183,61 @@ $('#sendNote').addEventListener('keydown', e => { if (e.key === 'Enter' && (e.me
 
 /* ---------- Shared ---------- */
 
+/* ---------- Search ---------- */
+
+// While the box holds a query, the journal lists matches from every day; a
+// match opens its day with the entry highlighted.
+let searchQuery = ''
+let searchTimer
+const escapeRe = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+const highlight = (text, words) => {
+  let html = esc(text)
+  for (const w of words) html = html.replace(new RegExp(escapeRe(esc(w)), 'gi'), m => `<mark>${m}</mark>`)
+  return html
+}
+const showSearch = async () => {
+  const q = searchQuery
+  const { hits, total } = await api(`/api/search?q=${encodeURIComponent(q)}`)
+  if (q !== searchQuery) return
+  const words = q.split(/\s+/).filter(Boolean)
+  $('#dayTitle').textContent = `Search · “${q}”`
+  $('#dayMeta').textContent = `${total} match${total === 1 ? '' : 'es'}${total > hits.length ? ` · newest ${hits.length} shown` : ''} · Esc to clear`
+  $('#entries').innerHTML = hits.length ? hits.map(h => {
+    const day = new Date(h.ts).toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })
+    const kind = h.type === 'turn' ? '' : `<span class="badge">${esc(h.type)}${h.done ? ', done' : ''}</span>`
+    const where = h.session ? `<span class="chip session">${esc(sessionName(h.session))}</span>` : ''
+    return `<div class="entry hit" data-goto="${esc(h.date)}" data-id="${esc(h.id)}"><time>${day}<br>${time(h.ts)}</time><div><span class="${h.type === 'turn' ? 'what' : 'text'}">${highlight(h.title, words)}</span>${kind}${where}${h.detail ? `<div class="detail">${highlight(h.detail, words)}</div>` : ''}</div></div>`
+  }).join('') : '<div class="empty">Nothing in the journal matches. Try fewer or shorter words.</div>'
+}
+const setSearch = q => {
+  searchQuery = q.trim()
+  clearTimeout(searchTimer)
+  if (!searchQuery) return renderJournal()
+  searchTimer = setTimeout(showSearch, 180)
+}
+$('#search').addEventListener('input', e => setSearch(e.target.value))
+$('#search').addEventListener('keydown', e => {
+  if (e.key === 'Escape') { e.target.value = ''; setSearch(''); e.target.blur() }
+  e.stopPropagation()
+})
+$('#entries').addEventListener('click', async e => {
+  const hit = e.target.closest('[data-goto]')
+  if (!hit) return
+  $('#search').value = ''
+  searchQuery = ''
+  date = hit.dataset.goto
+  sessionFilter = 'all'
+  await load()
+  const row = document.querySelector(`[data-entry="${CSS.escape(hit.dataset.id)}"]`)
+  if (row) { row.scrollIntoView({ block: 'center', behavior: 'smooth' }); row.classList.add('flash') }
+})
+
 const load = async () => {
   data = await api(`/api/state${date ? `?date=${date}` : ''}`)
   date = data.date
   applyTheme(data.meta?.theme)
   renderJournal()
+  if (searchQuery) showSearch()
   if (tab === 'diagram') { renderDiagram(); if (drawer) openDrawer(drawer.id) }
   if (tab === 'standup') renderStandup()
   if (tab === 'board' && board.underlay) { await loadUnderlay(); drawBoard() }
@@ -1352,6 +1412,7 @@ document.addEventListener('keydown', e => {
     return
   }
   if (k === 'n') { setTab('journal'); input.focus(); e.preventDefault() }
+  if (e.key === '/') { setTab('journal'); $('#search').focus(); e.preventDefault() }
   if (e.key === '\\') { togglePane('nav'); e.preventDefault() }
   if (k === '[' || k === ']') {
     const list = data.dates.map(d => d.date)
@@ -1361,11 +1422,20 @@ document.addEventListener('keydown', e => {
 })
 document.addEventListener('keyup', e => { if (e.key === ' ') { spaceHeld = false; renderTools() } })
 
+// The browser retries a dropped stream by itself; the server comes back on the
+// same address when a session on the project starts it again.
+let wasDown = false
 const connect = () => {
   const es = new EventSource(`/events?t=${token}`)
-  es.addEventListener('open', () => { $('#live').classList.add('on'); $('#liveText').textContent = 'live' })
+  es.addEventListener('open', () => {
+    $('#live').classList.add('on'); $('#liveText').textContent = 'live'
+    if (wasDown) { wasDown = false; load(); toast('Reconnected') }
+  })
   es.addEventListener('change', () => load())
-  es.addEventListener('error', () => { $('#live').classList.remove('on'); $('#liveText').textContent = 'session ended — reopen from Claude Code' })
+  es.addEventListener('error', () => {
+    wasDown = true
+    $('#live').classList.remove('on'); $('#liveText').textContent = 'reconnecting… (open a Claude session on this project)'
+  })
 }
 
 load().then(connect)
