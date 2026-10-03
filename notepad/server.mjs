@@ -487,12 +487,17 @@ const server = http.createServer(async (req, res) => {
     }
     // Your own arrangement of the map: component positions, kept with the journal.
     if (req.method === 'POST' && url.pathname === '/api/arrangement') {
-      const { positions } = await readBody(req)
+      const { positions, bends } = await readBody(req)
       const clean = {}
       for (const [id, pos] of Object.entries(positions ?? {})) {
         if (isId(id) && Number.isFinite(pos?.x) && Number.isFinite(pos?.y)) clean[id] = { x: Math.round(pos.x), y: Math.round(pos.y) }
       }
-      fs.writeFileSync(path.join(LOGS, 'map-layout.json'), `${JSON.stringify({ positions: clean, updatedAt: Date.now() }, null, 2)}\n`)
+      // A bend: where a line's handle sits, relative to the midpoint of its ends.
+      const kept = {}
+      for (const [key, off] of Object.entries(bends ?? {})) {
+        if (/^[\w/:.-]{1,200}->[\w/:.-]{1,200}$/.test(key) && Number.isFinite(off?.dx) && Number.isFinite(off?.dy)) kept[key] = { dx: Math.round(off.dx), dy: Math.round(off.dy) }
+      }
+      fs.writeFileSync(path.join(LOGS, 'map-layout.json'), `${JSON.stringify({ positions: clean, bends: kept, updatedAt: Date.now() }, null, 2)}\n`)
       return send(res, 200, { ok: true })
     }
     if (req.method === 'GET' && url.pathname === '/api/symbols') return send(res, 200, workspace.symbols(url.searchParams.get('path') ?? ''))
