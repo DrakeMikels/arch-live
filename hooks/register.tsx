@@ -649,6 +649,22 @@ const publishLive = async ($: EngineInterface) => {
 }
 
 // Reloads what the Journal tab shows: the days there are, the chosen day, open items.
+// Re-reads everything the pane draws from disk: the theme, which project's map
+// to show, the map itself and the journal. For edits made outside this
+// session (another session, your editor, git) that no hook saw.
+const refreshAll = async ($: EngineInterface) => {
+  const themeText = await $.fs.read(await homeThemePath($)).catch(() => undefined)
+  const theme = themeText ? plain(normalizeTheme(parseJson(themeText))) : null
+  const root = await findRoot($)
+  const graph = await loadGraph($, root).catch(() => null)
+  await update($, themeAtom, () => theme)
+  await update($, rootAtom, () => root)
+  await update($, graphAtom, () => graph)
+  await refreshJournal($).catch(() => undefined)
+  await writePopout($, graph, theme ?? DEFAULT_THEME).catch(() => undefined)
+  $.ui.toast(graph ? `arch-live: refreshed (${graph.nodes.length} components)` : 'arch-live: refreshed, no map found')
+}
+
 const refreshJournal = async ($: EngineInterface) => {
   const now = await $.clock.now()
   const today = dateKey(now)
@@ -1176,6 +1192,7 @@ export const register: Register = on => {
           <Button key={`tab-${id}`} label={label} variant={tab === id ? 'primary' : 'secondary'} onPress={() => update($, tabAtom, () => id)} />
         ))}
         <Button key="notepad" label="Open notepad ↗" onPress={() => openPopout($)} />
+        <Button key="refresh" label="↻" dimColor onPress={() => refreshAll($).catch(err => $.ui.toast(`arch-live: ${errorText(err)}`))} />
       </Box>
     )
 
