@@ -82,7 +82,18 @@ export type JournalNote = {
 }
 
 /** Closes a todo or blocker by id; appended, never edited in place, so two writers never clash. */
-export type JournalDone = { id: string; ts: number; type: 'done'; ref: string; by: 'you' | 'claude'; session?: string }
+export type JournalDone = {
+  id: string
+  ts: number
+  type: 'done'
+  ref: string
+  by: 'you' | 'claude'
+  session?: string
+  /** Filled in on reading: what was closed, its kind and the day it was added. */
+  refText?: string
+  refType?: JournalNoteType
+  refDate?: string
+}
 
 /** One Claude Code session on the project, kept in logs/<project>/sessions/<id>.json. */
 export type JournalSession = {

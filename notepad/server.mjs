@@ -216,7 +216,7 @@ const state = (date, self) => {
     self,
     project: PROJECT,
     sessions: namedSessions(),
-    sessionCounts: days.flatMap(d => d.entries).filter(e => e.type !== 'done').reduce((acc, e) => ({ ...acc, [e.session ?? '']: (acc[e.session ?? ''] ?? 0) + 1 }), {}),
+    sessionCounts: days.flatMap(d => d.entries).reduce((acc, e) => ({ ...acc, [e.session ?? '']: (acc[e.session ?? ''] ?? 0) + 1 }), {}),
     open: openItems(days),
     labels: Object.fromEntries(labelsFrom(days, g)),
   }
@@ -370,7 +370,7 @@ const server = http.createServer(async (req, res) => {
       // One session's whole history, newest day first.
       const id = url.searchParams.get('id') ?? ''
       const days = recent()
-        .map(d => ({ date: d.date, entries: d.entries.filter(e => (e.session ?? '') === id && e.type !== 'done') }))
+        .map(d => ({ date: d.date, entries: d.entries.filter(e => (e.session ?? '') === id) }))
         .filter(d => d.entries.length)
         .reverse()
       return send(res, 200, { id, days })

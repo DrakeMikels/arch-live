@@ -95,17 +95,32 @@ export const parseWebLines = (text: string): JournalEntry[] =>
     })
     .filter((e): e is JournalEntry => !!e && typeof e === 'object' && typeof e.id === 'string' && typeof e.ts === 'number')
 
-// Applies every done event to the note it names and drops the events, across
-// days (a todo from Monday closed on Wednesday is done on Monday's page too).
+// Applies every done event to the note it names, across days (a todo from
+// Monday closed on Wednesday is done on Monday's page too), and keeps the
+// event on the day it happened, with what it closed, so finishing something
+// shows in that day's journal.
 export const resolveDays = (days: JournalDay[]): JournalDay[] => {
   const closed = new Map<string, number>()
-  for (const day of days) for (const e of day.entries) if (isDone(e)) closed.set(e.ref, e.ts)
+  const notes = new Map<string, { note: JournalNote; date: string }>()
+  for (const day of days) {
+    for (const e of day.entries) {
+      if (isDone(e) && !closed.has(e.ref)) closed.set(e.ref, e.ts)
+      if (isNote(e)) notes.set(e.id, { note: e, date: day.date })
+    }
+  }
   return days.map(day => ({
     ...day,
     entries: day.entries
-      .filter(e => !isDone(e))
+      .filter(e => !isDone(e) || closed.get(e.ref) === e.ts)
       .sort((a, b) => a.ts - b.ts)
-      .map(e => (isNote(e) && closed.has(e.id) ? { ...e, done: true, doneAt: closed.get(e.id) } : e)),
+      .map(e => {
+        if (isNote(e) && closed.has(e.id)) return { ...e, done: true, doneAt: closed.get(e.id) }
+        if (isDone(e)) {
+          const found = notes.get(e.ref)
+          return found ? { ...e, refText: found.note.text, refType: found.note.type, refDate: found.date } : e
+        }
+        return e
+      }),
   }))
 }
 
@@ -159,6 +174,9 @@ export const dayMarkdown = (day: JournalDay, labels: Map<string, string>): strin
       if (e.arch?.added.length) lines.push(`- _Map: added ${e.arch.added.join(', ')}_`)
       if (e.arch?.removed.length) lines.push(`- _Map: removed ${e.arch.removed.join(', ')}_`)
       lines.push('')
+    } else if (isDone(e)) {
+      const from = e.refDate && e.refDate !== day.date ? ` _(${e.refType ?? 'item'} from ${dayLabel(Date.parse(`${e.refDate}T12:00:00`))})_` : ''
+      lines.push(`✓ **${timeLabel(e.ts)}** Done: ${e.refText ?? 'an item'}${from}`, '')
     } else if (isNote(e)) {
       const icon = e.done ? '✓' : (NOTE_ICON[e.type] ?? '•')
       const text = e.done ? `~~${e.text}~~` : e.text
@@ -185,6 +203,8 @@ export const standupDetail = ({ since, days, sessions = {} }: { since: number; d
       lines.push(`- ${when}${where} Asked: ${e.request}${did}${parts}${files}`)
     } else if (isNote(e)) {
       lines.push(`- ${when}${where} ${e.type}${e.done ? ' (done)' : ''}: ${e.text}${e.why ? ` — because ${e.why}` : ''}`)
+    } else if (isDone(e) && e.refText) {
+      lines.push(`- ${when}${where} completed ${e.refType ?? 'item'}: ${e.refText}`)
     }
   }
   return lines.slice(-200).join('\n') || '(nothing logged)'

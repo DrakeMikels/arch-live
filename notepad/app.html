@@ -112,6 +112,8 @@
   .check { appearance: none; width: 14px; height: 14px; border: 1.5px solid var(--muted); border-radius: 3px; vertical-align: -2px; margin: 0 6px 0 0; cursor: pointer; flex: none; }
   .check:checked { background: var(--accent); border-color: var(--accent); }
   .why { color: var(--muted); }
+  .entry.completed .icon { color: var(--accent); font-weight: 600; }
+  .rail .struck { text-decoration: line-through; color: var(--muted); }
   .empty { color: var(--soft); padding: 30px 0; }
   .rail { width: var(--rail-w, 300px); flex: none; border-left: 1px solid var(--rule); overflow-y: auto; padding: 16px 14px; }
   .rail section { margin-bottom: 22px; }
@@ -246,6 +248,7 @@
       <div class="gutter" data-pane="rail"><button data-collapse="rail" title="Hide this panel">›</button></div>
       <aside class="rail">
         <section><h2>Open</h2><div id="open"></div></section>
+        <section><h2>Completed</h2><div id="completed"></div></section>
         <section><h2>Decisions</h2><div id="decisions"></div></section>
         <section><h2>Components</h2><div id="components"></div></section>
       </aside>
@@ -453,8 +456,13 @@ const ICON = { note: '✎', todo: '☐', blocker: '⛔', decision: '◆', mark: 
 /* ---------- Journal ---------- */
 
 // One journal entry, as a row.
-const entryHtml = (e, showSession) => {
+const fromDay = date => new Date(`${date}T12:00:00`).toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })
+const entryHtml = (e, showSession, dayDate) => {
   const sessionChip = showSession && e.session ? `<span class="chip session">${esc(sessionName(e.session))}</span>` : ''
+  if (e.type === 'done') {
+    const from = e.refDate && e.refDate !== dayDate ? ` <span class="why">· ${esc(e.refType ?? 'item')} from ${esc(fromDay(e.refDate))}</span>` : ''
+    return `<div class="entry note-row completed" data-entry="${esc(e.id)}"><time>${time(e.ts)}</time><div><span class="icon">✓</span><span class="text">Done: ${inline(e.refText ?? 'an item')}</span>${from}${sessionChip}<span class="badge">${esc(e.refType ?? 'done')}</span></div></div>`
+  }
   if (e.type === 'turn') {
     const chips = e.components.map(c => `<span class="chip">${esc(label(c))}</span>`).join('')
     const files = e.files.length ? `<details><summary>${e.files.length} file${e.files.length > 1 ? 's' : ''}${e.commands ? ` · ${e.commands} command${e.commands > 1 ? 's' : ''}` : ''}</summary>${e.files.map(f => `<div>${f.created ? '+ ' : '~ '}<code>${esc(f.path)}</code></div>`).join('')}</details>` : ''
@@ -472,8 +480,9 @@ const entryHtml = (e, showSession) => {
 }
 const countLine = entries => {
   const turns = entries.filter(e => e.type === 'turn').length
-  const notes = entries.length - turns
-  return entries.length ? `${turns} turn${turns === 1 ? '' : 's'} · ${notes} note${notes === 1 ? '' : 's'}` : ''
+  const done = entries.filter(e => e.type === 'done').length
+  const notes = entries.length - turns - done
+  return entries.length ? [`${turns} turn${turns === 1 ? '' : 's'}`, `${notes} note${notes === 1 ? '' : 's'}`, done ? `${done} done` : ''].filter(Boolean).join(' · ') : ''
 }
 
 // The sidebar, like the Claude app's: this project's sessions by title, newest
@@ -517,15 +526,17 @@ const renderJournal = () => {
 
   const current = data.dates.find(d => d.date === data.date)
   $('#dayTitle').textContent = current?.label ?? data.date
-  const entries = [...day.entries].filter(e => e.type !== 'done').sort((a, b) => b.ts - a.ts)
+  const entries = [...day.entries].sort((a, b) => b.ts - a.ts)
   const showSession = new Set(entries.map(e => e.session ?? '')).size > 1
   $('#dayMeta').textContent = countLine(entries)
-  $('#entries').innerHTML = entries.length ? entries.map(e => entryHtml(e, showSession)).join('')
+  $('#entries').innerHTML = entries.length ? entries.map(e => entryHtml(e, showSession, data.date)).join('')
     : `<div class="empty">${data.date === today ? 'Nothing logged yet today. Notes you add here, /n in Claude Code, and each Claude turn show up live.' : 'Nothing logged this day.'}</div>`
   renderRail(entries, 'this day')
 }
 
 const renderRail = (entries, span) => {
+  const completed = entries.filter(e => e.type === 'done')
+  $('#completed').innerHTML = completed.length ? completed.map(d => `<div class="item"><div>✓ <span class="struck">${inline(d.refText ?? 'an item')}</span><small>${time(d.ts)}${d.refDate && d.refDate !== data.date ? ` · added ${esc(fromDay(d.refDate))}` : ''}</small></div></div>`).join('') : `<div class="hint">Nothing completed ${span}.</div>`
   const decisions = entries.filter(e => e.type === 'decision')
   $('#decisions').innerHTML = decisions.length ? decisions.map(d => `<div class="item"><div>◆ ${inline(d.text)}${d.why ? `<small>because ${inline(d.why)}</small>` : ''}</div></div>`).join('') : `<div class="hint">None ${span}.</div>`
   const counts = {}
@@ -547,7 +558,7 @@ const renderSession = async () => {
   $('#dayMeta').textContent = `${countLine(all)}${where}${isOpenSession(s) ? ' · open now' : ''}`
   $('#entries').innerHTML = log.days.length ? log.days.map(d => {
     const label = new Date(`${d.date}T12:00:00`).toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' })
-    return `<h3 class="dayhead">${esc(label)}</h3>${[...d.entries].sort((a, b) => b.ts - a.ts).map(e => entryHtml(e, false)).join('')}`
+    return `<h3 class="dayhead">${esc(label)}</h3>${[...d.entries].sort((a, b) => b.ts - a.ts).map(e => entryHtml(e, false, d.date)).join('')}`
   }).join('') : '<div class="empty">This session has not logged anything in this project yet.</div>'
   renderRail(all, 'in this session')
 }
@@ -1383,7 +1394,7 @@ document.addEventListener('click', async e => {
   if (t.closest('[data-type]')) { setType(t.closest('[data-type]').dataset.type); input.focus() }
   if (t.closest('[data-date]')) { date = t.closest('[data-date]').dataset.date; viewSession = null; load() }
   if (t.closest('[data-session]')) { viewSession = t.closest('[data-session]').dataset.session; renderJournal() }
-  if (t.matches('[data-done]') && t.checked) { await api('/api/done', { ref: t.dataset.done }); toast('Done'); load() }
+  if (t.matches('[data-done]') && t.checked) { await api('/api/done', { ref: t.dataset.done }); toast('Done · logged in today’s journal'); date = data.today; viewSession = null; load() }
   if (t.closest('[data-tool]')) { tool = t.closest('[data-tool]').dataset.tool; if (tool !== 'select') selection.clear(); renderTools(); drawBoard() }
   if (t.closest('[data-color]')) {
     color = t.closest('[data-color]').dataset.color
