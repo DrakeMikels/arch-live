@@ -1,4 +1,4 @@
-import type { ArchGraph, ArchSnapshot, CarryOffer, JournalDay, JournalDone, JournalEntry, JournalNote, JournalTurn } from '../types'
+import type { ArchGraph, ArchSnapshot, CarryOffer, JournalDay, JournalDone, JournalEdit, JournalEntry, JournalNote, JournalTurn } from '../types'
 
 // The work journal: one JSON file per project per day, outside the repo
 // (~/.claude/arch-live/logs/<project>/<YYYY-MM-DD>.json), so notes and
@@ -79,7 +79,8 @@ export const resolveTag = (graph: ArchGraph | null, raw: string): { text: string
 }
 
 export const isTurn = (e: JournalEntry): e is JournalTurn => e.type === 'turn'
-export const isNote = (e: JournalEntry): e is JournalNote => e.type !== 'turn' && e.type !== 'done'
+const NOTE_KINDS = new Set(['note', 'todo', 'blocker', 'decision', 'mark'])
+export const isNote = (e: JournalEntry): e is JournalNote => NOTE_KINDS.has(e.type)
 const isDone = (e: JournalEntry): e is JournalDone => e.type === 'done'
 
 // Lines the browser notepad appends (<date>.web.jsonl), one entry each.
@@ -95,26 +96,42 @@ export const parseWebLines = (text: string): JournalEntry[] =>
     })
     .filter((e): e is JournalEntry => !!e && typeof e === 'object' && typeof e.id === 'string' && typeof e.ts === 'number')
 
-// Applies every done event to the note it names, across days (a todo from
-// Monday closed on Wednesday is done on Monday's page too), and keeps the
-// event on the day it happened, with what it closed, so finishing something
-// shows in that day's journal.
+// Applies the events on notes across days (a todo from Monday closed on
+// Wednesday is done on Monday's page too): the latest edit sets its text, a
+// remove takes it out, and its latest done or undone says whether it is done.
+// The done event that closed it stays on the day it happened, with what it
+// closed, so finishing something shows in that day's journal.
 export const resolveDays = (days: JournalDay[]): JournalDay[] => {
-  const closed = new Map<string, number>()
-  const notes = new Map<string, { note: JournalNote; date: string }>()
-  for (const day of days) {
-    for (const e of day.entries) {
-      if (isDone(e) && !closed.has(e.ref)) closed.set(e.ref, e.ts)
-      if (isNote(e)) notes.set(e.id, { note: e, date: day.date })
-    }
+  const all = days.flatMap(d => d.entries).sort((a, b) => a.ts - b.ts)
+  const edits = new Map<string, JournalEdit>()
+  const removed = new Set<string>()
+  const status = new Map<string, { isDone: boolean; at: number }>()
+  for (const e of all) {
+    if (e.type === 'edit') edits.set(e.ref, e)
+    else if (e.type === 'remove') removed.add(e.ref)
+    else if (isDone(e)) status.set(e.ref, { isDone: true, at: e.ts })
+    else if (e.type === 'undone') status.set(e.ref, { isDone: false, at: e.ts })
   }
+  const apply = (n: JournalNote): JournalNote => {
+    const edit = edits.get(n.id)
+    const shut = status.get(n.id)
+    const edited = edit ? { ...n, text: edit.text, ...(edit.why !== undefined ? { why: edit.why || undefined } : {}), editedAt: edit.ts } : n
+    return shut?.isDone ? { ...edited, done: true, doneAt: shut.at } : edited
+  }
+  const notes = new Map<string, { note: JournalNote; date: string }>()
+  for (const day of days) for (const e of day.entries) if (isNote(e)) notes.set(e.id, { note: apply(e), date: day.date })
   return days.map(day => ({
     ...day,
     entries: day.entries
-      .filter(e => !isDone(e) || closed.get(e.ref) === e.ts)
+      .filter(e => {
+        if (e.type === 'edit' || e.type === 'undone' || e.type === 'remove') return false
+        if (isNote(e)) return !removed.has(e.id)
+        if (isDone(e)) return !removed.has(e.ref) && status.get(e.ref)?.isDone === true && status.get(e.ref)?.at === e.ts
+        return true
+      })
       .sort((a, b) => a.ts - b.ts)
       .map(e => {
-        if (isNote(e) && closed.has(e.id)) return { ...e, done: true, doneAt: closed.get(e.id) }
+        if (isNote(e)) return apply(e)
         if (isDone(e)) {
           const found = notes.get(e.ref)
           return found ? { ...e, refText: found.note.text, refType: found.note.type, refDate: found.date } : e

@@ -79,6 +79,8 @@ export type JournalNote = {
   done?: boolean
   doneAt?: number
   session?: string
+  /** Set on reading when the person edited it later. */
+  editedAt?: number
 }
 
 /** Closes a todo or blocker by id; appended, never edited in place, so two writers never clash. */
@@ -107,7 +109,14 @@ export type JournalSession = {
   endedAt?: number
 }
 
-export type JournalEntry = JournalTurn | JournalNote | JournalDone
+/** Changes to a note you wrote, appended like done events, never edited in place. */
+export type JournalEdit = { id: string; ts: number; type: 'edit'; ref: string; text: string; why?: string; by: 'you' | 'claude'; session?: string }
+/** Reopens a todo or blocker closed earlier. */
+export type JournalUndone = { id: string; ts: number; type: 'undone'; ref: string; by: 'you' | 'claude'; session?: string }
+/** Takes a note you wrote out of the journal. */
+export type JournalRemove = { id: string; ts: number; type: 'remove'; ref: string; by: 'you' | 'claude'; session?: string }
+
+export type JournalEntry = JournalTurn | JournalNote | JournalDone | JournalEdit | JournalUndone | JournalRemove
 
 export type ArchSnapshot = {
   ts?: number

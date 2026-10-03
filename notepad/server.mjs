@@ -456,6 +456,35 @@ const server = http.createServer(async (req, res) => {
       append({ id: newId(Date.now()), ts: Date.now(), type: 'done', ref, by: 'you', ...(self ? { session: self } : {}) })
       return send(res, 200, { ok: true })
     }
+    // Edits, reopening and removing are appended events, like done.
+    if (req.method === 'POST' && url.pathname === '/api/undone') {
+      const { ref } = await readBody(req)
+      if (!isId(ref)) return send(res, 400, { error: 'ref is required' })
+      append({ id: newId(Date.now()), ts: Date.now(), type: 'undone', ref, by: 'you', ...(self ? { session: self } : {}) })
+      return send(res, 200, { ok: true })
+    }
+    if (req.method === 'POST' && url.pathname === '/api/edit') {
+      const { ref, text, why } = await readBody(req)
+      const body = String(text ?? '').trim().slice(0, 4000)
+      if (!isId(ref) || !body) return send(res, 400, { error: 'ref and text are required' })
+      append({
+        id: newId(Date.now()),
+        ts: Date.now(),
+        type: 'edit',
+        ref,
+        text: body,
+        ...(typeof why === 'string' ? { why: why.trim().slice(0, 2000) } : {}),
+        by: 'you',
+        ...(self ? { session: self } : {}),
+      })
+      return send(res, 200, { ok: true })
+    }
+    if (req.method === 'POST' && url.pathname === '/api/remove') {
+      const { ref } = await readBody(req)
+      if (!isId(ref)) return send(res, 400, { error: 'ref is required' })
+      append({ id: newId(Date.now()), ts: Date.now(), type: 'remove', ref, by: 'you', ...(self ? { session: self } : {}) })
+      return send(res, 200, { ok: true })
+    }
     if (req.method === 'POST' && url.pathname === '/api/open') {
       const { path: file, line } = await readBody(req)
       if (typeof file !== 'string') return send(res, 400, { error: 'path is required' })
