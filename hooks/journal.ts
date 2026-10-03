@@ -171,11 +171,13 @@ export type StandupInput = {
   /** Every loaded day, oldest first: the window, plus earlier days for open items and the baseline. */
   days: JournalDay[]
   graph: ArchGraph | null
+  /** Session names by id; with two or more sessions in the window, Done is grouped by session. */
+  sessions?: Record<string, string>
 }
 
 // The brief for a standup: done (by component), decisions, blockers, next,
 // architecture changes and notes, all since `since`.
-export const buildStandup = ({ title, since, now, days, graph }: StandupInput): string => {
+export const buildStandup = ({ title, since, now, days, graph, sessions = {} }: StandupInput): string => {
   const labels = labelsFrom(days, graph)
   const label = (id?: string) => (id ? (labels.get(id) ?? id) : 'General')
 
@@ -183,11 +185,15 @@ export const buildStandup = ({ title, since, now, days, graph }: StandupInput): 
   const recent = entries.filter(e => e.ts >= since)
   const notes = entries.filter(isNote)
 
-  const done = new Map<string, string[]>()
-  const add = (component: string, line: string) => {
-    const list = done.get(component) ?? []
+  // Done, by session and then component. Work from before sessions were
+  // recorded, or from one session only, needs no session heading.
+  const done = new Map<string, Map<string, string[]>>()
+  const add = (session: string, component: string, line: string) => {
+    const bySession = done.get(session) ?? new Map<string, string[]>()
+    const list = bySession.get(component) ?? []
     if (!list.includes(line) && list.length < 5) list.push(line)
-    done.set(component, list)
+    bySession.set(component, list)
+    done.set(session, bySession)
   }
   for (const turn of recent.filter(isTurn)) {
     if (turn.files.length === 0 && !turn.arch) continue
@@ -195,20 +201,26 @@ export const buildStandup = ({ title, since, now, days, graph }: StandupInput): 
     if (!line) continue
     const files = turn.files.length ? ` _(${turn.files.length} file${turn.files.length > 1 ? 's' : ''})_` : ''
     const components = turn.components.length ? turn.components : ['']
-    for (const c of components) add(label(c || undefined), `${line}${files}`)
+    for (const c of components) add(turn.session ?? '', label(c || undefined), `${line}${files}`)
   }
   for (const todo of notes.filter(n => n.type === 'todo' && n.done && (n.doneAt ?? 0) >= since)) {
-    add(label(todo.component), `✓ ${todo.text}`)
+    add(todo.session ?? '', label(todo.component), `✓ ${todo.text}`)
   }
+  const sessionName = (id: string) => (id ? (sessions[id] ?? 'Unnamed session') : 'Earlier work')
+  const isGrouped = [...done.keys()].filter(Boolean).length > 1
 
   const lines = [`# Standup · ${title} · ${dayLabel(now)}`, `_Since ${dayLabel(since)}, ${timeLabel(since)}_`, '']
   const section = (heading: string, body: string[]) => {
     if (body.length) lines.push(`## ${heading}`, ...body, '')
   }
 
+  const components = (byComponent: Map<string, string[]>) =>
+    [...byComponent.entries()].flatMap(([component, items]) => [`**${component}**`, ...items.map(i => `- ${i}`)])
   section(
     'Done',
-    [...done.entries()].flatMap(([component, items]) => [`**${component}**`, ...items.map(i => `- ${i}`)]),
+    isGrouped
+      ? [...done.entries()].flatMap(([id, byComponent]) => [`### ${sessionName(id)}`, ...components(byComponent), ''])
+      : [...done.values()].flatMap(components),
   )
   section(
     'Decisions',

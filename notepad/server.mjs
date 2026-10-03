@@ -1,6 +1,8 @@
 // arch-live notepad: a local, dependency-free server for the browser view of
 // the work journal. The mod starts it per session (`node server.mjs --logs
-// <dir> --project <path>`) and stops it with the session. It binds 127.0.0.1
+// <dir> --project <path> --session <id>`) and stops it with the session.
+// Every session on a project shares the logs folder, so each notepad sees
+// the others' turns, notes and boards live. It binds 127.0.0.1
 // on a free port, prints `NOTEPAD <url>`, and answers only requests carrying
 // the token in that url.
 //
@@ -35,6 +37,7 @@ const arg = name => {
 }
 const LOGS = arg('logs')
 const PROJECT = arg('project')
+const SELF = arg('session') ?? null
 if (!LOGS || !PROJECT) {
   console.error('usage: server.mjs --logs <dir> --project <path>')
   process.exit(2)
@@ -84,6 +87,23 @@ const loadDays = from => {
 
 const recent = () => loadDays(dateKey(Date.now() - 60 * DAY_MS))
 
+// The project's sessions, newest first, from sessions/<id>.json.
+const SESSIONS = path.join(LOGS, 'sessions')
+const sessionFile = id => path.join(SESSIONS, `${String(id).replace(/[^\w-]/g, '')}.json`)
+const sessions = () => {
+  let names = []
+  try {
+    names = fs.readdirSync(SESSIONS).filter(n => n.endsWith('.json'))
+  } catch {
+    return []
+  }
+  return names
+    .map(n => readJson(path.join(SESSIONS, n), null))
+    .filter(s => s?.id)
+    .sort((a, b) => (b.lastAt ?? 0) - (a.lastAt ?? 0))
+}
+const sessionNames = () => Object.fromEntries(sessions().filter(s => s.name).map(s => [s.id, s.name]))
+
 // Tells the mod (which reads this process's output) to refresh its pane.
 const changed = () => process.stdout.write('CHANGED\n')
 
@@ -113,6 +133,8 @@ const state = date => {
       count: days.find(x => x.date === d)?.entries.length ?? 0,
     })),
     day,
+    self: SELF,
+    sessions: sessions(),
     open: openItems(days),
     labels: Object.fromEntries(labelsFrom(days, g)),
   }
@@ -125,7 +147,7 @@ const standup = () => {
   const last = Number(readJson(path.join(LOGS, 'standup.json'), {}).last ?? 0)
   const since = last > now - 14 * DAY_MS ? last : now - DAY_MS
   const g = graph()
-  return buildStandup({ title: g?.title ?? meta().title, since, now, days: recent(), graph: g })
+  return buildStandup({ title: g?.title ?? meta().title, since, now, days: recent(), graph: g, sessions: sessionNames() })
 }
 
 const addNote = ({ type, text, component }) => {
@@ -146,6 +168,7 @@ const addNote = ({ type, text, component }) => {
     by: 'you',
     ...(component || tagged.component ? { component: component || tagged.component } : {}),
     ...(why ? { why } : {}),
+    ...(SELF ? { session: SELF } : {}),
   }
   append(entry)
   return entry
@@ -178,7 +201,8 @@ const broadcast = () => {
     for (const res of clients) res.write(`event: change\ndata: ${Date.now()}\n\n`)
   }, 150)
 }
-fs.watch(LOGS, broadcast)
+// Recursive, so a board or session saved by another session's notepad shows too.
+fs.watch(LOGS, { recursive: true }, broadcast)
 const mapDir = path.join(PROJECT, '.claude')
 if (fs.existsSync(mapDir)) fs.watch(mapDir, broadcast)
 setInterval(() => {
@@ -241,6 +265,13 @@ const server = http.createServer(async (req, res) => {
       ask({ kind: 'describe', component: body.component, label: found?.node.label ?? body.component, files: missing })
       return send(res, 200, { ok: true, files: missing.length })
     }
+    if (req.method === 'POST' && url.pathname === '/api/session') {
+      const { id, name } = await readBody(req)
+      const prev = readJson(sessionFile(id ?? ''), null)
+      if (!prev || typeof name !== 'string' || !name.trim()) return send(res, 400, { error: 'a known session and a name are required' })
+      fs.writeFileSync(sessionFile(id), `${JSON.stringify({ ...prev, name: name.trim().slice(0, 60), isNamed: true }, null, 2)}\n`)
+      return send(res, 200, { ok: true })
+    }
     if (req.method === 'GET' && url.pathname === '/api/boards') return send(res, 200, { boards: workspace.listBoards() })
     if (req.method === 'GET' && url.pathname === '/api/board') {
       return send(res, 200, readJson(workspace.boardFile(url.searchParams.get('id') ?? ''), null) ?? { error: 'no such board' })
@@ -249,7 +280,16 @@ const server = http.createServer(async (req, res) => {
       const body = await readBody(req, 8_000_000)
       if (typeof body.id !== 'string' || !Array.isArray(body.items)) return send(res, 400, { error: 'id and items are required' })
       fs.mkdirSync(workspace.boardsDir, { recursive: true })
-      const board = { id: body.id, title: String(body.title ?? 'Untitled').slice(0, 120), items: body.items, underlay: !!body.underlay, updatedAt: Date.now() }
+      const prev = readJson(workspace.boardFile(body.id), null)
+      const board = {
+        id: body.id,
+        title: String(body.title ?? 'Untitled').slice(0, 120),
+        items: body.items,
+        underlay: !!body.underlay,
+        // The session that started the board keeps it, whoever edits it later.
+        session: prev?.session ?? (typeof body.session === 'string' ? body.session : SELF),
+        updatedAt: Date.now(),
+      }
       fs.writeFileSync(workspace.boardFile(body.id), JSON.stringify(board))
       return send(res, 200, { ok: true, updatedAt: board.updatedAt })
     }
@@ -268,13 +308,15 @@ const server = http.createServer(async (req, res) => {
         png: `${base}.png`,
         md: String(body.md ?? '').slice(0, 60_000),
         note: String(body.note ?? '').slice(0, 4000),
+        target: typeof body.target === 'string' ? body.target : SELF,
+        targetName: sessionNames()[body.target] ?? undefined,
       })
       return send(res, 200, { ok: true, png: `${base}.png` })
     }
     if (req.method === 'POST' && url.pathname === '/api/done') {
       const { ref } = await readBody(req)
       if (typeof ref !== 'string') return send(res, 400, { error: 'ref is required' })
-      append({ id: newId(Date.now()), ts: Date.now(), type: 'done', ref, by: 'you' })
+      append({ id: newId(Date.now()), ts: Date.now(), type: 'done', ref, by: 'you', ...(SELF ? { session: SELF } : {}) })
       return send(res, 200, { ok: true })
     }
     if (req.method === 'POST' && url.pathname === '/api/open') {

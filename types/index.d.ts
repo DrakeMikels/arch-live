@@ -61,6 +61,8 @@ export type JournalTurn = {
   components: string[]
   commands: number
   arch?: { added: string[]; removed: string[] }
+  /** The Claude Code session it happened in. */
+  session?: string
 }
 
 export type JournalNoteType = 'note' | 'todo' | 'blocker' | 'decision' | 'mark'
@@ -76,10 +78,23 @@ export type JournalNote = {
   alternatives?: string
   done?: boolean
   doneAt?: number
+  session?: string
 }
 
 /** Closes a todo or blocker by id; appended, never edited in place, so two writers never clash. */
-export type JournalDone = { id: string; ts: number; type: 'done'; ref: string; by: 'you' | 'claude' }
+export type JournalDone = { id: string; ts: number; type: 'done'; ref: string; by: 'you' | 'claude'; session?: string }
+
+/** One Claude Code session on the project, kept in logs/<project>/sessions/<id>.json. */
+export type JournalSession = {
+  id: string
+  /** From its first request, until the person renames it. */
+  name?: string
+  /** True once the person named it, so the first request no longer does. */
+  isNamed?: boolean
+  startedAt: number
+  lastAt: number
+  endedAt?: number
+}
 
 export type JournalEntry = JournalTurn | JournalNote | JournalDone
 

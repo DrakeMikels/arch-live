@@ -207,7 +207,7 @@ export const createWorkspace = ({ project, logs, graph, recent }) => {
         .filter(n => n.endsWith('.json'))
         .map(n => {
           const b = JSON.parse(fs.readFileSync(path.join(boardsDir, n), 'utf8'))
-          return { id: n.replace(/\.json$/, ''), title: b.title ?? 'Untitled', updatedAt: b.updatedAt ?? 0 }
+          return { id: n.replace(/\.json$/, ''), title: b.title ?? 'Untitled', session: b.session ?? null, updatedAt: b.updatedAt ?? 0 }
         })
         .sort((a, b) => b.updatedAt - a.updatedAt)
     } catch {

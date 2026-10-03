@@ -15,6 +15,7 @@ import type {
   JournalFile,
   JournalNote,
   JournalNoteType,
+  JournalSession,
   PaneTab,
 } from '../types'
 import {
@@ -376,7 +377,15 @@ let notepadError: string | undefined
 
 const startNotepad = async ($: EngineInterface): Promise<string | undefined> => {
   await publishLive($).catch(() => undefined)
-  const argv = [`${$.plugin.root}/notepad/server.mjs`, '--logs', await logsDir($), '--project', await projectPath($)]
+  const argv = [
+    `${$.plugin.root}/notepad/server.mjs`,
+    '--logs',
+    await logsDir($),
+    '--project',
+    await projectPath($),
+    '--session',
+    await $.session.id(),
+  ]
   const reasons: string[] = []
   for (const node of ['node', '/opt/homebrew/bin/node', '/usr/local/bin/node']) {
     const url = await new Promise<string | undefined>(resolve => {
@@ -422,7 +431,7 @@ const startNotepad = async ($: EngineInterface): Promise<string | undefined> => 
 
 type NotepadAsk =
   | { kind: 'describe'; component: string; label: string; files: string[] }
-  | { kind: 'board'; title: string; png: string; md: string; note: string }
+  | { kind: 'board'; title: string; png: string; md: string; note: string; target?: string; targetName?: string }
 
 // A request the person made in the notepad, run as a prompt in this session.
 const handleAsk = async ($: EngineInterface, json: string) => {
@@ -436,7 +445,20 @@ const handleAsk = async ($: EngineInterface, json: string) => {
     submitSoon($, describePrompt(request.component, request.label, request.files))
     $.ui.toast(`arch-live: asked Claude to describe ${request.files.length} ${request.label} files`)
   } else if (request.kind === 'board') {
-    submitSoon($, boardPrompt(request.title, request.png, request.md, request.note))
+    const text = boardPrompt(request.title, request.png, request.md, request.note)
+    if (request.target && request.target !== (await $.session.id())) {
+      // Another session on the project: it gets the board as a message there.
+      const where = request.targetName ?? 'another session'
+      try {
+        await $.session.send({ to: { sessionId: request.target }, text: `The person sent you a whiteboard from their arch-live notepad.\n\n${text}` })
+        await addNote($, 'note', `Sent the whiteboard "${request.title}" to ${where}`, 'you')
+        $.ui.toast(`arch-live: sent "${request.title}" to ${where}`)
+      } catch (err) {
+        $.ui.toast(`arch-live: could not reach ${where} (${errorText(err)}); is it still open?`)
+      }
+      return
+    }
+    submitSoon($, text)
     await addNote($, 'note', `Sent the whiteboard "${request.title}" to Claude`, 'you')
   }
 }
@@ -596,7 +618,32 @@ const changeDay = ($: EngineInterface, date: string, change: (day: JournalDay) =
   return run
 }
 
-const appendEntry = async ($: EngineInterface, entry: JournalEntry) => {
+// Each session on the project keeps its own small file, so sessions running
+// side by side never write the same one. The notepad lists and renames them.
+const sessionFile = async ($: EngineInterface) => `${await logsDir($)}/sessions/${await $.session.id()}.json`
+
+const changeSession = async ($: EngineInterface, change: (s: JournalSession) => JournalSession) => {
+  const file = await sessionFile($)
+  const now = await $.clock.now()
+  const prev = parseJson(await $.fs.read(file).catch(() => '')) as JournalSession | undefined
+  const base: JournalSession = prev?.id ? prev : { id: await $.session.id(), startedAt: now, lastAt: now }
+  await $.fs.write(file, `${JSON.stringify(plain(change({ ...base, lastAt: now })), null, 2)}\n`)
+}
+
+// Session names by id, for the standup.
+const sessionNames = async ($: EngineInterface): Promise<Record<string, string>> => {
+  const dir = `${await logsDir($)}/sessions`
+  const files = (await $.fs.list(dir).catch(() => [])).filter(f => f.name.endsWith('.json'))
+  const names: Record<string, string> = {}
+  for (const f of files) {
+    const one = parseJson(await $.fs.read(`${dir}/${f.name}`).catch(() => '')) as JournalSession | undefined
+    if (one?.id && one.name) names[one.id] = one.name
+  }
+  return names
+}
+
+const appendEntry = async ($: EngineInterface, given: JournalEntry) => {
+  const entry = given.session ? given : { ...given, session: await $.session.id() }
   const day = await changeDay($, dateKey(entry.ts), d => ({ ...d, entries: [...d.entries, entry] }))
   await refreshJournal($).catch(() => undefined)
   return day
@@ -709,7 +756,7 @@ const standupText = async ($: EngineInterface) => {
   const since = last > now - 14 * DAY_MS ? last : now - DAY_MS
   const graph = (await $.state.get({ plugin: 'arch-live', key: 'graph' })).value ?? null
   const title = graph?.title ?? (await projectPath($)).split('/').pop() ?? 'Project'
-  return buildStandup({ title, since, now, days: await recentDays($), graph })
+  return buildStandup({ title, since, now, days: await recentDays($), graph, sessions: await sessionNames($) })
 }
 
 const copyText = async ($: EngineInterface, text: string) => {
@@ -875,6 +922,12 @@ const closeById = async ($: EngineInterface, id: string) => {
 }
 
 export const register: Register = on => {
+  on('session.end', async ($, e, next) => {
+    const now = await $.clock.now()
+    await changeSession($, s => ({ ...s, endedAt: now })).catch(() => undefined)
+    return next(e)
+  })
+
   on('session.start', async ($, e, next) => {
     const started = await next(e)
 
@@ -964,6 +1017,8 @@ export const register: Register = on => {
 
     const isProject = (await Promise.all(PROJECT_MARKERS.map(m => $.fs.exists(m)))).some(Boolean)
     const isDismissed = (await $.store.get(`dismissed:${e.cwd}`)) === true
+    // Open again (a resumed session included), so it can take boards.
+    await changeSession($, ({ endedAt: _ended, ...open }) => open).catch(() => undefined)
     await refreshJournal($).catch(() => undefined)
     // A session left open past midnight moves its Journal to the new day.
     let shownDay = dateKey(await $.clock.now())
@@ -1069,6 +1124,9 @@ export const register: Register = on => {
     const result = await next(pending && isTyped ? { ...e, context: [...(e.context ?? []), pending] } : e)
     if (pending && isTyped && result.drop === undefined) await update($, pendingAtom, () => null)
     if (result.drop === undefined && e.text.trim() && !e.text.trim().startsWith('/')) {
+      const first = distill(e.text, { mode: 'request', max: 1 }).statements[0]?.text ?? e.text
+      const name = first.replace(/\s+/g, ' ').trim().slice(0, 48)
+      await changeSession($, s => (s.isNamed || s.name ? s : { ...s, name })).catch(() => undefined)
       turn = {
         ts: await $.clock.now(),
         request: e.text,
@@ -1087,6 +1145,7 @@ export const register: Register = on => {
     const done = turn
     if (!e.agentId && done) {
       turn = undefined
+      await changeSession($, s => s).catch(() => undefined)
       await update($, activeAtom, () => [])
       await publishLive($).catch(() => undefined)
       const request = distill(done.request, { mode: 'request', max: 2 }).statements.map(s => s.text).join(' ')
