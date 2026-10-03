@@ -166,7 +166,12 @@
 
   /* Standup */
   .standup { flex: 1; overflow-y: auto; padding: 22px 32px 60px; max-width: 860px; }
-  .standup .bar { display: flex; gap: 8px; margin-bottom: 14px; }
+  .standup .bar { display: flex; gap: 8px; margin-bottom: 14px; flex-wrap: wrap; align-items: center; }
+  .standup .bar select { border: 1px solid var(--rule); border-radius: 7px; background: var(--nodeFill); padding: 4px 8px; }
+  .written { border: 1px solid var(--rule); border-left: 3px solid var(--accent); border-radius: 8px; padding: 12px 16px; margin-bottom: 18px; background: var(--nodeFill); }
+  .written .stamp { color: var(--soft); font-size: 11px; margin-bottom: 6px; }
+  .written.stale .stamp::after { content: ' · older than the last standup'; }
+  details.brief summary { cursor: pointer; color: var(--soft); font-size: 11px; letter-spacing: .14em; text-transform: uppercase; margin-bottom: 6px; }
   .md h1 { font-size: 17px; margin: 0 0 4px; }
   .md h2 { font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: var(--soft); margin: 22px 0 6px; font-weight: 500; }
   .md ul { margin: 4px 0; padding-left: 20px; }
@@ -259,8 +264,14 @@
 
     <section class="view" data-view="standup">
       <div class="standup">
-        <div class="bar"><button class="btn primary" id="copyStandup">Copy for Slack</button><button class="btn" id="given">Mark as given</button></div>
-        <div class="md" id="standup"></div>
+        <div class="bar">
+          <button class="btn accent" id="writeStandup" title="Claude writes your standup notes from the journal">✦ Write with Claude</button>
+          <select id="standupScope" aria-label="What to cover"><option value="all">All sessions</option><option value="session">This session</option></select>
+          <button class="btn primary" id="copyStandup">Copy for Slack</button>
+          <button class="btn" id="given">Mark as given</button>
+        </div>
+        <div id="written"></div>
+        <details class="brief" id="briefBox" open><summary>Journal brief</summary><div class="md" id="standup"></div></details>
       </div>
     </section>
   </main>
@@ -478,11 +489,23 @@ const renderJournal = () => {
   $('#components').innerHTML = Object.keys(counts).length ? Object.entries(counts).sort((a, b) => b[1] - a[1]).map(([c, n]) => `<div class="item"><div>${esc(label(c))}<small>${n} turn${n > 1 ? 's' : ''}</small></div></div>`).join('') : '<div class="hint">No component work this day.</div>'
 }
 
+// Claude's write-up on top when there is one, the journal brief under it.
+let standupCopy = ''
 const renderStandup = async () => {
-  const { markdown } = await api('/api/standup')
+  const { markdown, written, last, hasSession } = await api('/api/standup')
   $('#standup').innerHTML = md(markdown)
-  $('#standup').dataset.raw = markdown
+  $('#standupScope').style.display = hasSession ? '' : 'none'
+  const isStale = written && last && written.at < last
+  $('#written').innerHTML = written?.markdown
+    ? `<div class="written${isStale ? ' stale' : ''}"><div class="stamp">Written by Claude · ${esc(written.scope ?? 'all sessions')} · ${new Date(written.at).toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })} ${time(written.at)}</div><div class="md">${md(written.markdown)}</div></div>`
+    : '<div class="hint" style="margin-bottom:14px">Click <b>Write with Claude</b> for meeting-ready notes: accomplished, in progress, blockers, next.</div>'
+  $('#briefBox').open = !written?.markdown || isStale
+  standupCopy = written?.markdown && !isStale ? written.markdown : markdown
 }
+$('#writeStandup').addEventListener('click', async () => {
+  const res = await api('/api/ask', { kind: 'standup', scope: $('#standupScope').value })
+  toast(res.ok ? 'Asked Claude to write your standup: it appears here when done' : 'Could not reach the session')
+})
 
 /* ---------- Diagram + drawer ---------- */
 
@@ -1301,7 +1324,7 @@ $('#copyDay').addEventListener('click', async () => {
   await navigator.clipboard.writeText(`${$('#dayTitle').textContent}\n\n${lines.join('\n')}`)
   toast('Day copied')
 })
-$('#copyStandup').addEventListener('click', async () => { await navigator.clipboard.writeText($('#standup').dataset.raw ?? ''); toast('Standup copied') })
+$('#copyStandup').addEventListener('click', async () => { await navigator.clipboard.writeText(standupCopy); toast('Standup copied') })
 $('#given').addEventListener('click', async () => { await api('/api/standup/given', {}); toast('Next standup starts from now'); renderStandup() })
 
 document.addEventListener('keydown', e => {

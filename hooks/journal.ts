@@ -170,6 +170,26 @@ export const dayMarkdown = (day: JournalDay, labels: Map<string, string>): strin
   return lines.join('\n').trimEnd()
 }
 
+// Every turn and note in the window, one line each, for Claude to write the
+// standup from: more than the brief keeps, so nothing is lost to summarising.
+export const standupDetail = ({ since, days, sessions = {} }: { since: number; days: JournalDay[]; sessions?: Record<string, string> }): string => {
+  const lines: string[] = []
+  const entries = days.flatMap(d => d.entries).filter(e => e.ts >= since).sort((a, b) => a.ts - b.ts)
+  for (const e of entries) {
+    const where = e.session ? ` [${sessions[e.session] ?? 'session'}]` : ''
+    const when = `${dayLabel(e.ts)} ${timeLabel(e.ts)}`
+    if (isTurn(e)) {
+      const did = e.summary.length ? ` → ${e.summary.join(' ')}` : ''
+      const parts = e.components.length ? ` (components: ${e.components.join(', ')})` : ''
+      const files = e.files.length ? ` (${e.files.length} file${e.files.length > 1 ? 's' : ''})` : ''
+      lines.push(`- ${when}${where} Asked: ${e.request}${did}${parts}${files}`)
+    } else if (isNote(e)) {
+      lines.push(`- ${when}${where} ${e.type}${e.done ? ' (done)' : ''}: ${e.text}${e.why ? ` — because ${e.why}` : ''}`)
+    }
+  }
+  return lines.slice(-200).join('\n') || '(nothing logged)'
+}
+
 export type StandupInput = {
   title: string
   since: number

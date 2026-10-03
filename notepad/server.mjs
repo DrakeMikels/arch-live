@@ -247,7 +247,9 @@ const server = http.createServer(async (req, res) => {
       return
     }
     if (req.method === 'GET' && url.pathname === '/api/state') return send(res, 200, state(url.searchParams.get('date')))
-    if (req.method === 'GET' && url.pathname === '/api/standup') return send(res, 200, { markdown: standup() })
+    if (req.method === 'GET' && url.pathname === '/api/standup') {
+      return send(res, 200, { markdown: standup(), written: readJson(path.join(LOGS, 'standup-written.json'), null), last: Number(readJson(path.join(LOGS, 'standup.json'), {}).last ?? 0), hasSession: !!SELF })
+    }
     if (req.method === 'GET' && url.pathname === '/live.svg') {
       return send(res, 200, readText(path.join(LOGS, 'live.svg')) || '<svg xmlns="http://www.w3.org/2000/svg"/>', 'image/svg+xml')
     }
@@ -259,6 +261,11 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && url.pathname === '/api/symbols') return send(res, 200, workspace.symbols(url.searchParams.get('path') ?? ''))
     if (req.method === 'POST' && url.pathname === '/api/ask') {
       const body = await readBody(req)
+      // The mod builds the standup prompt itself, from the same journal.
+      if (body.kind === 'standup') {
+        ask({ kind: 'standup', scope: body.scope === 'session' ? 'session' : 'all' })
+        return send(res, 200, { ok: true })
+      }
       if (body.kind !== 'describe' || typeof body.component !== 'string') return send(res, 400, { error: 'unknown request' })
       const found = await workspace.component(body.component)
       const missing = (found?.files ?? []).filter(f => !f.summary || f.isStale).map(f => f.path).slice(0, 40)

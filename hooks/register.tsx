@@ -35,6 +35,8 @@ import {
   resolveDays,
   resolveTag,
   snapshotOf,
+  standupDetail,
+  timeLabel,
 } from './journal'
 import { outline, popoutHtml, renderSvg } from './render'
 import type { Overlay } from './render'
@@ -54,6 +56,7 @@ const DECISION_TOOL = 'mcp__arch-live__log_decision'
 const BLOCKER_TOOL = 'mcp__arch-live__log_blocker'
 const TODO_TOOL = 'mcp__arch-live__log_todo'
 const DESCRIBE_TOOL = 'mcp__arch-live__describe_files'
+const STANDUP_TOOL = 'mcp__arch-live__save_standup'
 const NOTE_COMMANDS: Record<string, JournalNoteType> = { n: 'note', todo: 'todo', blocker: 'blocker', decision: 'decision' }
 const COMMANDS = ['arch', 'arch-map', 'arch-theme', 'arch-export', 'standup', 'done', 'notepad', ...Object.keys(NOTE_COMMANDS)]
 const DAY_MS = 24 * 60 * 60 * 1000
@@ -432,6 +435,7 @@ const startNotepad = async ($: EngineInterface): Promise<string | undefined> => 
 type NotepadAsk =
   | { kind: 'describe'; component: string; label: string; files: string[] }
   | { kind: 'board'; title: string; png: string; md: string; note: string; target?: string; targetName?: string }
+  | { kind: 'standup'; scope: 'all' | 'session' }
 
 // A request the person made in the notepad, run as a prompt in this session.
 const handleAsk = async ($: EngineInterface, json: string) => {
@@ -444,6 +448,8 @@ const handleAsk = async ($: EngineInterface, json: string) => {
     }
     submitSoon($, describePrompt(request.component, request.label, request.files))
     $.ui.toast(`arch-live: asked Claude to describe ${request.files.length} ${request.label} files`)
+  } else if (request.kind === 'standup') {
+    await askForStandup($, request.scope === 'session')
   } else if (request.kind === 'board') {
     const text = boardPrompt(request.title, request.png, request.md, request.note)
     if (request.target && request.target !== (await $.session.id())) {
@@ -750,10 +756,51 @@ const lastStandup = async ($: EngineInterface): Promise<number> => {
 const markStandupGiven = async ($: EngineInterface) =>
   $.fs.write(await standupFile($), `${JSON.stringify({ last: await $.clock.now() })}\n`)
 
+const standupSince = async ($: EngineInterface, now: number) => {
+  const last = await lastStandup($)
+  return last > now - 14 * DAY_MS ? last : now - DAY_MS
+}
+
+// Claude's write-up of the standup, shown above the journal brief.
+const writtenFile = async ($: EngineInterface) => `${await logsDir($)}/standup-written.json`
+
+const standupPrompt = (scope: string, since: number, brief: string, detail: string) =>
+  [
+    `Write my standup notes for this morning's engineering meeting from my arch-live work journal (${scope}, since ${dayLabel(since)} ${timeLabel(since)}).`,
+    'Markdown, in this order. Short plain bullets about outcomes, not activity. Group related work into one bullet and start it with the area in bold when that helps. No file paths unless they matter to the team.',
+    '## Accomplished\n## In progress\n## Blockers (write "None" when there are none)\n## Next\n## Decisions (only when there are any)\n## Heads-up (only when useful: risks, asks, things others should know)',
+    'Leave out noise: repeated or test notes, and checks of the tooling itself, unless that was the work. When the journal is unclear, you may read `git log` in the project for the same window.',
+    `Then call ${STANDUP_TOOL} once with the Markdown and scope "${scope}". Reply with one short line when done.`,
+    '',
+    'Journal brief:',
+    '',
+    brief,
+    '',
+    'Every turn and note, oldest first:',
+    '',
+    detail,
+  ].join('\n')
+
+// One click: the window's journal goes to Claude, which writes the standup
+// and saves it with save_standup.
+const askForStandup = async ($: EngineInterface, isSession: boolean) => {
+  const now = await $.clock.now()
+  const since = await standupSince($, now)
+  const me = await $.session.id()
+  const all = await recentDays($)
+  const days = isSession ? all.map(d => ({ ...d, entries: d.entries.filter(e => e.session === me) })) : all
+  const sessions = await sessionNames($)
+  const graph = (await $.state.get({ plugin: 'arch-live', key: 'graph' })).value ?? null
+  const title = graph?.title ?? (await projectPath($)).split('/').pop() ?? 'Project'
+  const brief = buildStandup({ title, since, now, days, graph, sessions })
+  const scope = isSession ? `this session: ${sessions[me] ?? 'unnamed'}` : 'all sessions'
+  submitSoon($, standupPrompt(scope, since, brief, standupDetail({ since, days, sessions })))
+  $.ui.toast('arch-live: asked Claude to write your standup; it starts when Claude is free')
+}
+
 const standupText = async ($: EngineInterface) => {
   const now = await $.clock.now()
-  const last = await lastStandup($)
-  const since = last > now - 14 * DAY_MS ? last : now - DAY_MS
+  const since = await standupSince($, now)
   const graph = (await $.state.get({ plugin: 'arch-live', key: 'graph' })).value ?? null
   const title = graph?.title ?? (await projectPath($)).split('/').pop() ?? 'Project'
   return buildStandup({ title, since, now, days: await recentDays($), graph, sessions: await sessionNames($) })
@@ -975,6 +1022,18 @@ export const register: Register = on => {
       },
     })
     await $.tool.register({
+      name: 'save_standup',
+      description: "Save the standup notes you wrote for the person; they show on the notepad's Standup tab, ready to copy.",
+      inputSchema: {
+        type: 'object',
+        properties: {
+          markdown: { type: 'string', description: 'The standup notes, in Markdown.' },
+          scope: { type: 'string', description: 'What it covers, e.g. "all sessions".' },
+        },
+        required: ['markdown'],
+      },
+    })
+    await $.tool.register({
       name: 'log_decision',
       description: 'Record a design decision in the person’s work journal: what was decided, why, and what else was considered.',
       inputSchema: {
@@ -1183,6 +1242,17 @@ export const register: Register = on => {
     return { result: `Saved ${given.length} file summar${given.length === 1 ? 'y' : 'ies'} for ${node.label}.` }
   })
 
+  on('tool.call', { tool: STANDUP_TOOL }, async ($, e) => {
+    const args = e as unknown as { markdown?: string; scope?: string }
+    const markdown = String(args.markdown ?? '').trim()
+    if (!markdown) return { result: 'Nothing to save: pass the standup as markdown.' }
+    const now = await $.clock.now()
+    const saved = { markdown: markdown.slice(0, 20_000), scope: String(args.scope ?? 'all sessions').slice(0, 120), at: now, since: await standupSince($, now) }
+    await $.fs.write(await writtenFile($), `${JSON.stringify(saved, null, 2)}\n`)
+    await refreshJournal($).catch(() => undefined)
+    return { result: "Saved. It is on the notepad's Standup tab and in the pane's Standup tab." }
+  })
+
   on('tool.call', { tool: DECISION_TOOL }, async ($, e) => {
     const args = e as unknown as { decision?: string; why?: string; alternatives?: string; component?: string }
     if (!args.decision) return { result: 'decision is required.' }
@@ -1263,15 +1333,17 @@ export const register: Register = on => {
 
     if (tab === 'standup') {
       const brief = await standupText($)
+      const written = parseJson(await $.fs.read(await writtenFile($)).catch(() => '')) as { markdown?: string; scope?: string; at?: number } | undefined
+      const shown = written?.markdown ? written.markdown : brief
       return (
         <Box flexDirection="column" gap={1}>
           {tabs}
           <Box flexDirection="row" gap={1} flexWrap="wrap">
+            <Button key="standup-write" label="✦ Write with Claude" variant="primary" onPress={() => askForStandup($, false)} />
             <Button
               key="standup-copy"
               label="Copy"
-              variant="primary"
-              onPress={async () => $.ui.toast((await copyText($, brief)) ? 'Standup copied' : 'arch-live: could not copy')}
+              onPress={async () => $.ui.toast((await copyText($, shown)) ? 'Standup copied' : 'arch-live: could not copy')}
             />
             <Button
               key="standup-given"
@@ -1283,7 +1355,10 @@ export const register: Register = on => {
               }}
             />
           </Box>
-          <Markdown text={brief} />
+          {written?.markdown ? (
+            <Text key="standup-written" dimColor>{`Written by Claude · ${written.scope ?? 'all sessions'} · ${dayLabel(written.at ?? 0)} ${timeLabel(written.at ?? 0)}`}</Text>
+          ) : null}
+          <Markdown text={shown} />
         </Box>
       )
     }
