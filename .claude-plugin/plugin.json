@@ -2,5 +2,8 @@
   "name": "arch-live",
   "version": "0.1.0",
   "description": "Live system-architecture diagram of the repo, drawn as Claude builds it, in your own design tokens",
-  "types": "./types/index.d.ts"
+  "types": "./types/index.d.ts",
+  "author": {
+    "name": "Mike Drake"
+  }
 }
