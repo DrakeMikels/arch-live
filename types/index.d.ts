@@ -11,8 +11,28 @@ export type ArchNode = {
   owns?: string[]
   /** One-line summaries of the component's files, by project-relative path. */
   files?: Record<string, { summary: string; at: number }>
+  /** What the component is made of, drawn when you open it in the notepad. */
+  breakdown?: ArchBreakdown
   order: number
 }
+
+/** One part inside a component: a folder, a file or a section of a large file. */
+export type ArchPart = {
+  id: string
+  label: string
+  /** entry, handler, ui, logic, data, integration, config or util. */
+  role?: string
+  path?: string
+  line?: number
+  /** One plain sentence on its purpose. */
+  summary?: string
+  /** Claude's in-depth explanation, in Markdown, when asked for. */
+  detail?: string
+  detailAt?: number
+}
+
+/** A component's parts and how they connect; an edge may end at another component's id. */
+export type ArchBreakdown = { parts: ArchPart[]; edges: { from: string; to: string; label?: string }[]; at: number }
 
 export type ArchEdgeStyle = 'call' | 'http' | 'async'
 

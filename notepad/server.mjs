@@ -479,6 +479,10 @@ const server = http.createServer(async (req, res) => {
         ask({ kind: 'standup', scope: body.scope === 'session' ? 'session' : 'all' }, self)
         return send(res, 200, { ok: true })
       }
+      if ((body.kind === 'breakdown' || body.kind === 'explain') && isId(body.component)) {
+        ask({ kind: body.kind, component: body.component, ...(body.kind === 'explain' && isId(body.part) ? { part: body.part } : {}) }, self)
+        return send(res, 200, { ok: true })
+      }
       if (body.kind !== 'describe' || typeof body.component !== 'string') return send(res, 400, { error: 'unknown request' })
       const found = await workspace.component(body.component)
       const missing = (found?.files ?? []).filter(f => !f.summary || f.isStale).map(f => f.path).slice(0, 40)

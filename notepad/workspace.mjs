@@ -150,6 +150,10 @@ export const createWorkspace = ({ project, logs, graph, recent }) => {
     const summaries = node.files ?? {}
     return {
       node: { id: node.id, label: node.label, kind: node.kind, sublabel: node.sublabel ?? '', path: node.path ?? null, line: node.line ?? null },
+      breakdown: node.breakdown ?? null,
+      // Its neighbours on the map, drawn at the edges of the zoomed-in view.
+      callers: (g?.edges ?? []).filter(e => e.to === id).map(e => ({ id: e.from, label: g.nodes.find(n => n.id === e.from)?.label ?? e.from, kind: g.nodes.find(n => n.id === e.from)?.kind ?? 'service', edge: e.label ?? '' })),
+      callees: (g?.edges ?? []).filter(e => e.from === id).map(e => ({ id: e.to, label: g.nodes.find(n => n.id === e.to)?.label ?? e.to, kind: g.nodes.find(n => n.id === e.to)?.kind ?? 'service', edge: e.label ?? '' })),
       owns,
       total: all.length,
       truncated: all.length > FILE_LIMIT,

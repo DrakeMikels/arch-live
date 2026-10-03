@@ -144,6 +144,19 @@
   /* Diagram + drawer */
   .diagram { flex: 1; overflow: auto; padding: 16px; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
   .diagram .svg { flex: 1; display: flex; align-items: flex-start; justify-content: center; }
+  .diagram .svg.focused { flex-direction: column; align-items: stretch; justify-content: flex-start; }
+  .crumbs { display: flex; gap: 8px; align-items: baseline; margin: 2px 0 12px; }
+  .crumbs button { border: 0; background: none; color: var(--accent); cursor: pointer; padding: 0; font: inherit; }
+  .crumbs b { font-weight: 600; }
+  .focus-svg { max-width: 100%; height: auto; align-self: center; }
+  .focus-svg .part { cursor: pointer; }
+  .focus-svg .part:hover rect.box { stroke: var(--accent); }
+  .focus-svg .stub { cursor: pointer; }
+  .focus-svg .stub:hover rect { stroke: var(--muted); }
+  .part-card { border: 1px solid var(--rule); border-left: 3px solid var(--accent); border-radius: 8px; padding: 12px 14px; margin: 10px 0 16px; background: var(--nodeFill); }
+  .part-card h3 { margin: 2px 0 6px; font-size: 15px; }
+  .part-card .md { margin-top: 10px; }
+  .part-card .actions { margin: 10px 0 0; }
   .diagram svg { max-width: 100%; height: auto; }
   .diagram g[data-id]:hover rect { stroke-width: 2; }
   .drawer { width: var(--drawer-w, 460px); flex: none; border-left: 1px solid var(--rule); overflow-y: auto; padding: 16px 16px 60px; display: none; background: var(--paper); }
@@ -283,7 +296,7 @@
 
     <section class="view" data-view="diagram">
       <div class="diagram">
-        <div class="hint">Click a component to see its files and functions · <kbd>⌥</kbd>-click to mark it</div>
+        <div class="hint">Click a component to open it: its parts, files and functions · <kbd>⌥</kbd>-click to mark it</div>
         <div class="svg" id="svg"></div>
       </div>
       <div class="gutter" data-pane="drawer"><button data-collapse="drawer" title="Close (Esc)">›</button></div>
@@ -701,16 +714,146 @@ $('#writeStandup').addEventListener('click', async () => {
 let drawer = null // { id, data, filter, expanded: Set, details: Map }
 
 const renderDiagram = async () => {
+  if (drawer) return renderFocus()
   const svg = await fetch(`/live.svg?t=${token}`).then(r => r.text())
+  $('#svg').classList.remove('focused')
   $('#svg').innerHTML = svg
-  if (drawer) document.querySelectorAll('#svg g[data-id]').forEach(g => g.style.opacity = g.dataset.id === drawer.id ? '1' : '.55')
 }
+
+/* ---------- Zoomed into one component ---------- */
+
+// A component's parts: Claude's breakdown, else a quick look built from the
+// folders and files it owns.
+const partsOf = d => {
+  if (d.breakdown?.parts?.length) return { parts: d.breakdown.parts, edges: d.breakdown.edges ?? [], isQuick: false }
+  const groups = new Map()
+  for (const f of d.files) {
+    const base = [...d.owns].sort((a, b) => b.length - a.length).find(o => f.path === o || f.path.startsWith(`${o}/`)) ?? ''
+    const rest = base && f.path !== base ? f.path.slice(base.length + 1) : f.path.slice(base.length)
+    const seg = rest.split('/')[0]
+    const key = !rest ? base : rest.includes('/') ? `${base ? `${base}/` : ''}${seg}` : f.path
+    if (!groups.has(key)) groups.set(key, { files: [], isDir: rest.includes('/') })
+    groups.get(key).files.push(f)
+  }
+  const parts = [...groups.entries()]
+    .sort((a, b) => b[1].files.length - a[1].files.length)
+    .slice(0, 10)
+    .map(([key, g]) => {
+      const described = g.files.find(f => f.summary)
+      return {
+        id: `q:${key}`,
+        label: `${key.split('/').pop()}${g.isDir ? '/' : ''}`,
+        path: g.isDir ? g.files[0].path : key,
+        summary: g.files.length === 1 ? (described?.summary ?? '') : `${g.files.length} files${described ? ` · ${described.summary}` : ''}`,
+      }
+    })
+  return { parts, edges: [], isQuick: true }
+}
+
+// Columns follow the connections (a part sits right of what calls it); with
+// none, a grid. The component is the group box; its neighbours are stubs at
+// the left (callers) and right (callees).
+const renderFocus = () => {
+  const d = drawer.data
+  const { parts, edges, isQuick } = partsOf(d)
+  const ids = new Set(parts.map(p => p.id))
+  const inner = edges.filter(e => ids.has(e.from) && ids.has(e.to) && e.from !== e.to)
+  const level = Object.fromEntries(parts.map(p => [p.id, 0]))
+  for (let i = 0; i < parts.length; i++) for (const e of inner) if (level[e.to] < level[e.from] + 1 && level[e.from] + 1 < parts.length) level[e.to] = level[e.from] + 1
+  let cols
+  if (inner.length) {
+    cols = []
+    for (const p of parts) (cols[level[p.id]] ??= []).push(p)
+    cols = cols.filter(Boolean)
+  } else {
+    const per = Math.max(1, Math.ceil(parts.length / 3))
+    cols = Array.from({ length: Math.min(3, parts.length) }, (_, i) => parts.slice(i * per, (i + 1) * per)).filter(c => c.length)
+  }
+  const W = 220, H = 66, GX = 70, GY = 20, PAD = 28, TOP = 58, SW = 160, SH = 46, SGAP = 70
+  const rows = Math.max(1, ...cols.map(c => c.length))
+  const gx = d.callers.length ? SW + SGAP : 0
+  const gw = PAD * 2 + Math.max(1, cols.length) * W + Math.max(0, cols.length - 1) * GX
+  const gh = TOP + PAD + rows * H + (rows - 1) * GY
+  const totalW = gx + gw + (d.callees.length ? SGAP + SW : 0)
+  const totalH = Math.max(gh, d.callers.length * (SH + 14), d.callees.length * (SH + 14)) + 20
+  const pos = {}
+  cols.forEach((c, ci) => c.forEach((p, ri) => {
+    const colH = c.length * H + (c.length - 1) * GY
+    pos[p.id] = { x: gx + PAD + ci * (W + GX), y: TOP + (rows * H + (rows - 1) * GY - colH) / 2 + ri * (H + GY) }
+  }))
+  const cut = (t, n) => (String(t ?? '').length > n ? `${String(t).slice(0, n - 1)}…` : String(t ?? ''))
+  const out = []
+  out.push(`<defs><marker id="fa" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L8,4 L0,8 z" style="fill:var(--muted)"/></marker></defs>`)
+  out.push(`<rect x="${gx}" y="0" width="${gw}" height="${gh}" rx="14" style="fill:var(--paper2);stroke:var(--accent);stroke-width:1.5"/>`)
+  out.push(`<text x="${gx + PAD}" y="26" style="fill:var(--accent);font-size:10px;letter-spacing:.16em">${esc(d.node.kind.toUpperCase())}</text>`)
+  out.push(`<text x="${gx + PAD}" y="44" style="fill:var(--ink);font-size:16px;font-weight:600">${esc(d.node.label)}</text>`)
+  const curve = (x1, y1, x2, y2) => `M ${x1} ${y1} C ${x1 + 40} ${y1}, ${x2 - 40} ${y2}, ${x2} ${y2}`
+  for (const e of inner) {
+    const a = pos[e.from], b = pos[e.to]
+    const fwd = b.x > a.x
+    const path = fwd ? curve(a.x + W, a.y + H / 2, b.x, b.y + H / 2) : `M ${a.x + W / 2} ${a.y + H} C ${a.x + W / 2} ${a.y + H + 40}, ${b.x + W / 2} ${b.y + H + 40}, ${b.x + W / 2} ${b.y + H}`
+    out.push(`<path d="${path}" style="fill:none;stroke:var(--muted);stroke-width:1.2" marker-end="url(#fa)"/>`)
+    if (e.label) out.push(`<text x="${(a.x + W + b.x) / 2}" y="${(a.y + b.y + H) / 2 - 4}" text-anchor="middle" style="fill:var(--soft);font-size:9px;letter-spacing:.08em">${esc(cut(e.label.toUpperCase(), 18))}</text>`)
+  }
+  const stubs = (list, x, side) => list.forEach((s, i) => {
+    const y = (totalH - 20 - list.length * (SH + 14)) / 2 + i * (SH + 14)
+    out.push(`<g class="stub" data-stub="${esc(s.id)}"><rect x="${x}" y="${y}" width="${SW}" height="${SH}" rx="8" style="fill:var(--nodeFill);stroke:var(--rule)"/><text x="${x + 12}" y="${y + 18}" style="fill:var(--soft);font-size:9px;letter-spacing:.14em">${esc(String(s.kind).toUpperCase())}</text><text x="${x + 12}" y="${y + 34}" style="fill:var(--muted);font-size:12px">${esc(cut(s.label, 20))}</text></g>`)
+    // Wired to the part named in the breakdown, else to the group's edge.
+    const hit = edges.find(e => (side === 'in' ? e.from === s.id && ids.has(e.to) : e.to === s.id && ids.has(e.from)))
+    const p = hit ? pos[side === 'in' ? hit.to : hit.from] : null
+    const path = side === 'in'
+      ? curve(x + SW, y + SH / 2, p ? p.x : gx, p ? p.y + H / 2 : gh / 2)
+      : curve(p ? p.x + W : gx + gw, p ? p.y + H / 2 : gh / 2, x, y + SH / 2)
+    out.push(`<path d="${path}" style="fill:none;stroke:var(--rule);stroke-width:1.2;stroke-dasharray:4 3" marker-end="url(#fa)"/>`)
+    if (s.edge) out.push(`<text x="${side === 'in' ? x + SW + 8 : x - 8}" y="${y + SH / 2 - 6}" text-anchor="${side === 'in' ? 'start' : 'end'}" style="fill:var(--soft);font-size:9px;letter-spacing:.08em">${esc(cut(s.edge.toUpperCase(), 16))}</text>`)
+  })
+  stubs(d.callers, 0, 'in')
+  stubs(d.callees, gx + gw + SGAP, 'out')
+  parts.forEach((p, i) => {
+    const { x, y } = pos[p.id]
+    const on = drawer.part === p.id
+    out.push(`<g class="part" data-part="${esc(p.id)}"><title>${esc(p.summary ?? p.label)}</title>
+      <rect class="box" x="${x}" y="${y}" width="${W}" height="${H}" rx="9" style="fill:var(--nodeFill);stroke:${on ? 'var(--accent)' : 'var(--rule)'};stroke-width:${on ? 2 : 1}"/>
+      <text x="${x + 30}" y="${y + 20}" style="fill:var(--soft);font-size:9px;letter-spacing:.14em">${esc((p.role ?? (isQuick ? 'files' : 'part')).toUpperCase())}</text>
+      <text x="${x + 30}" y="${y + 37}" style="fill:var(--ink);font-size:13px;font-weight:600">${esc(cut(p.label, 24))}</text>
+      <text x="${x + 30}" y="${y + 53}" style="fill:var(--muted);font-size:10.5px">${esc(cut(p.summary ?? '', 34))}</text>
+      <circle cx="${x + 15}" cy="${y + 17}" r="9" style="fill:${p.detail ? 'var(--accent)' : 'var(--nodeFill)'};stroke:var(--accent);stroke-width:1.3"/>
+      <text x="${x + 15}" y="${y + 20.5}" text-anchor="middle" style="fill:${p.detail ? 'var(--nodeFill)' : 'var(--accent)'};font-size:10px;font-weight:600">${i + 1}</text></g>`)
+  })
+  const note = isQuick
+    ? `quick look from its folders · <button data-crumb-breakdown>Break down with Claude</button> for real parts you can explain`
+    : `${parts.length} parts by Claude · updated ${esc(stamp(d.breakdown.at))} · click a numbered pin for its purpose`
+  $('#svg').classList.add('focused')
+  $('#svg').innerHTML = `<div class="crumbs"><button data-crumb>System</button><span>›</span><b>${esc(d.node.label)}</b><span class="hint">${note}</span></div>
+    <svg class="focus-svg" viewBox="-4 -4 ${totalW + 8} ${totalH + 8}" width="${totalW + 8}" style="font-family:var(--font)">${out.join('')}</svg>`
+}
+
+$('#svg').addEventListener('click', async e => {
+  if (e.target.closest('[data-crumb]')) return closeDrawer()
+  if (e.target.closest('[data-crumb-breakdown]')) {
+    const res = await api('/api/ask', { kind: 'breakdown', component: drawer.id })
+    return toast(res.ok ? 'Asked Claude to break this component down: the diagram fills in when it is done' : 'Could not reach the session')
+  }
+  const stub = e.target.closest('[data-stub]')
+  if (stub) return openDrawer(stub.dataset.stub)
+  const part = e.target.closest('[data-part]')
+  if (part && drawer) {
+    drawer.part = drawer.part === part.dataset.part ? null : part.dataset.part
+    renderDrawer(); renderFocus()
+    $('#drawer').scrollTop = 0
+  }
+})
+$('#svg').addEventListener('dblclick', e => {
+  const part = e.target.closest('[data-part]')
+  const p = part && drawer ? partsOf(drawer.data).parts.find(x => x.id === part.dataset.part) : null
+  if (p?.path) openCode(p.path, p.line)
+})
 
 const openDrawer = async id => {
   const prev = drawer?.id === id ? drawer : null
   const found = await api(`/api/component?id=${encodeURIComponent(id)}`)
   if (found.error) return toast(found.error)
-  drawer = prev ? { ...prev, data: found } : { id, data: found, filter: '', expanded: new Set(), details: new Map() }
+  drawer = prev ? { ...prev, data: found } : { id, data: found, filter: '', expanded: new Set(), details: new Map(), part: null }
   if (!prev) {
     // Small components open fully; big ones open the folders with today's work.
     const folders = new Set()
@@ -782,8 +925,24 @@ const renderDrawer = () => {
   const q = drawer.filter.toLowerCase()
   const files = q ? d.files.filter(f => f.path.toLowerCase().includes(q) || (f.summary ?? '').toLowerCase().includes(q)) : d.files
   const missing = d.files.filter(f => !f.summary || f.isStale).length
+  const pv = partsOf(d)
+  const part = pv.parts.find(x => x.id === drawer.part)
+  const n = part ? pv.parts.indexOf(part) + 1 : 0
+  const partCard = part ? `<div class="part-card">
+      <div class="eyebrow">Part ${n}${part.role ? ` · ${esc(part.role)}` : ''}</div>
+      <h3>${esc(part.label)}</h3>
+      <div>${inline(part.summary ?? 'No summary yet.')}</div>
+      ${part.path ? `<div class="hint" style="margin-top:6px"><code>${esc(part.path)}${part.line ? `:${part.line}` : ''}</code></div>` : ''}
+      ${part.detail ? `<div class="md">${md(part.detail)}</div><div class="hint">Explained by Claude · ${esc(stamp(part.detailAt ?? 0))}</div>` : ''}
+      <div class="actions">
+        ${part.path ? `<button class="btn" data-open="${esc(part.path)}" data-line="${part.line ?? 1}">Open ↗</button>` : ''}
+        ${pv.isQuick ? '<span class="hint">Break the component down with Claude to explain its parts in depth.</span>' : `<button class="btn${part.detail ? '' : ' accent'}" data-explain="${esc(part.id)}">${part.detail ? 'Explain again' : 'Explain in depth with Claude'}</button>`}
+        <button class="btn" data-part-close>Back to component</button>
+      </div>
+    </div>` : ''
   $('#drawer').innerHTML = `
     <button class="close" id="drawerClose" title="Close (Esc)">×</button>
+    ${partCard}
     <div class="eyebrow">${esc(d.node.kind)}</div>
     <h2>${esc(d.node.label)}</h2>
     <div class="sub">${esc(d.node.sublabel)}</div>
@@ -791,6 +950,7 @@ const renderDrawer = () => {
     <div class="actions">
       ${d.node.path ? `<button class="btn" data-open="${esc(d.node.path)}" data-line="${d.node.line ?? 1}">Open entry ↗</button>` : ''}
       <button class="btn${missing ? ' accent' : ''}" id="describe" ${missing ? '' : 'disabled'}>${missing ? `Describe ${Math.min(missing, 40)} file${missing === 1 ? '' : 's'} with Claude` : 'All files described'}</button>
+      <button class="btn${d.breakdown ? '' : ' accent'}" id="breakdown" title="Claude reads the code and names the component's parts and how they connect">${d.breakdown ? 'Break down again' : 'Break down with Claude'}</button>
       <button class="btn" id="drawerMark">Mark</button>
     </div>
     <input class="filter" id="drawerFilter" placeholder="Filter files…" value="${esc(drawer.filter)}">
@@ -1620,6 +1780,16 @@ document.addEventListener('click', async e => {
       const res = await api('/api/ask', { kind: 'describe', component: drawer.id })
       return toast(res.ok ? `Asked Claude to describe ${res.files} file${res.files === 1 ? '' : 's'}: they fill in as it works` : 'Could not reach the session')
     }
+    if (t.closest('#breakdown')) {
+      const res = await api('/api/ask', { kind: 'breakdown', component: drawer.id })
+      return toast(res.ok ? 'Asked Claude to break this component down: the diagram fills in when it is done' : 'Could not reach the session')
+    }
+    const explain = t.closest('[data-explain]')
+    if (explain) {
+      const res = await api('/api/ask', { kind: 'explain', component: drawer.id, part: explain.dataset.explain })
+      return toast(res.ok ? 'Asked Claude to explain this part: it appears here when done' : 'Could not reach the session')
+    }
+    if (t.closest('[data-part-close]')) { drawer.part = null; renderDrawer(); return renderDiagram() }
     if (t.closest('#drawerMark')) {
       const why = prompt(`Mark ${drawer.data.node.label}: why it matters (optional)`)
       if (why !== null) { await api('/api/note', { type: 'mark', text: why.trim() || '·', component: drawer.id }); toast('Marked') }

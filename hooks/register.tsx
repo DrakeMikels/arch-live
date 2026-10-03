@@ -16,6 +16,7 @@ import type {
   JournalNote,
   JournalNoteType,
   JournalSession,
+  ArchPart,
   PaneTab,
 } from '../types'
 import {
@@ -57,6 +58,9 @@ const BLOCKER_TOOL = 'mcp__arch-live__log_blocker'
 const TODO_TOOL = 'mcp__arch-live__log_todo'
 const DESCRIBE_TOOL = 'mcp__arch-live__describe_files'
 const STANDUP_TOOL = 'mcp__arch-live__save_standup'
+const BREAKDOWN_TOOL = 'mcp__arch-live__arch_breakdown'
+const EXPLAIN_TOOL = 'mcp__arch-live__explain_part'
+const PART_ROLES = ['entry', 'handler', 'ui', 'logic', 'data', 'integration', 'config', 'util']
 const NOTE_COMMANDS: Record<string, JournalNoteType> = { n: 'note', todo: 'todo', blocker: 'blocker', decision: 'decision' }
 const COMMANDS = ['arch', 'arch-map', 'arch-theme', 'arch-export', 'standup', 'done', 'notepad', ...Object.keys(NOTE_COMMANDS)]
 const DAY_MS = 24 * 60 * 60 * 1000
@@ -136,6 +140,28 @@ const brandPrompt = (url: string) =>
     "Constraints: ink and muted must reach WCAG AA on paper; exactly one accent hue, the brand's most distinctive; paper warm-neutral, never pure white; from an 8-color brand keep 3 (paper, ink, accent) and make the rest muted variants. Give a dark palette too, or leave it out and it is derived by swapping paper and ink.",
     `Call ${THEME_TOOL} with source: "${url}", fix anything its warnings flag, then show me the tokens in a short table.`,
   ].join('\n\n')
+
+const breakdownPrompt = (node: ArchNode, graph: ArchGraph) => {
+  const others = graph.nodes.filter(n => n.id !== node.id).map(n => `${n.id} (${n.label})`).join(', ')
+  const files = Object.entries(node.files ?? {}).slice(0, 30).map(([p, f]) => `- ${p}: ${f.summary}`)
+  return [
+    `Break down the ${node.label} component of my architecture into its internal parts, for the arch-live diagram.`,
+    `Read its code: entry ${node.path ?? '(none)'}${node.line ? `:${node.line}` : ''}; it owns ${(node.owns ?? []).join(', ') || 'no folders listed'}.`,
+    ...(files.length ? ['What its files do, as summarised before:', ...files] : []),
+    'Pick 3 to 10 parts, each with one clear responsibility: a module, handler, store, UI area or job. A part can be a folder, a file, or a section of a large file (give the line where it starts).',
+    `For each part: id (kebab-case), label (2 to 4 words), role (${PART_ROLES.join(', ')}), path, line, and one plain sentence under 20 words on its purpose.`,
+    `Then the connections: part to part, and part to another component where the call happens. Other components: ${others || 'none'}.`,
+    `Call ${BREAKDOWN_TOOL} once with component "${node.id}". Reply with one short line when done.`,
+  ].join('\n')
+}
+
+const explainPrompt = (node: ArchNode, part: ArchPart) =>
+  [
+    `Explain the "${part.label}" part of the ${node.label} component in depth, for my arch-live notepad.`,
+    `Read its code at ${part.path ?? node.path ?? 'the component'}${part.line ? `:${part.line}` : ''}. Its purpose, as summarised: ${part.summary ?? 'not yet described'}.`,
+    'Write Markdown under 200 words: what it does; how it works (the main flow in 3 to 6 bullets); what it depends on and what calls it; anything risky or surprising. Plain, short sentences.',
+    `Then call ${EXPLAIN_TOOL} with component "${node.id}", part "${part.id}" and the Markdown as detail. Reply with one short line when done.`,
+  ].join('\n')
 
 const describePrompt = (id: string, label: string, files: string[]) =>
   [
@@ -342,7 +368,10 @@ const applyUpdate = (prev: ArchGraph | null, args: UpdateArgs, now: number) => {
     if (found) {
       nodes = nodes.map(n => (n.id === id ? { ...n, ...patch } : n))
     } else {
-      nodes.push({ id, label: input.label || id, kind: kind ?? 'service', order: order++, ...patch })
+      // A re-map keeps what was learned about a component that keeps its id.
+      const was = prev?.nodes.find(n => n.id === id)
+      const kept = { ...(was?.files ? { files: was.files } : {}), ...(was?.breakdown ? { breakdown: was.breakdown } : {}) }
+      nodes.push({ id, label: input.label || id, kind: kind ?? 'service', order: order++, ...kept, ...patch })
     }
     touched.push(id)
   }
@@ -445,6 +474,8 @@ type NotepadAsk =
   | { kind: 'describe'; component: string; label: string; files: string[] }
   | { kind: 'board'; title: string; png: string; md: string; note: string; target?: string; targetName?: string }
   | { kind: 'standup'; scope: 'all' | 'session' }
+  | { kind: 'breakdown'; component: string }
+  | { kind: 'explain'; component: string; part: string }
 
 // A request the person made in the notepad, run as a prompt in this session.
 const handleAsk = async ($: EngineInterface, json: string) => {
@@ -459,6 +490,19 @@ const handleAsk = async ($: EngineInterface, json: string) => {
     $.ui.toast(`arch-live: asked Claude to describe ${request.files.length} ${request.label} files`)
   } else if (request.kind === 'standup') {
     await askForStandup($, request.scope === 'session')
+  } else if (request.kind === 'breakdown' || request.kind === 'explain') {
+    const graph = await read($, graphAtom)
+    const node = graph?.nodes.find(n => n.id === request.component)
+    if (!graph || !node) return $.ui.toast(`arch-live: no component "${request.component}" on the map`)
+    if (request.kind === 'breakdown') {
+      submitSoon($, breakdownPrompt(node, graph))
+      $.ui.toast(`arch-live: asked Claude to break down ${node.label}`)
+    } else {
+      const part = node.breakdown?.parts.find(p => p.id === request.part)
+      if (!part) return $.ui.toast('arch-live: that part is not in the breakdown any more')
+      submitSoon($, explainPrompt(node, part))
+      $.ui.toast(`arch-live: asked Claude to explain ${part.label}`)
+    }
   } else if (request.kind === 'board') {
     const text = boardPrompt(request.title, request.png, request.md, request.note)
     if (request.target && request.target !== (await $.session.id())) {
@@ -1128,6 +1172,14 @@ const closeById = async ($: EngineInterface, id: string) => {
   await appendEntry($, { id: newId(now), ts: now, type: 'done', ref: id, by: 'you' })
 }
 
+// Saves a changed node into the map file and the pane.
+const saveNode = async ($: EngineInterface, graph: ArchGraph, id: string, change: (n: ArchNode) => ArchNode) => {
+  const next: ArchGraph = plain({ ...graph, nodes: graph.nodes.map(n => (n.id === id ? change(n) : n)) })
+  await update($, graphAtom, () => next)
+  await $.fs.write(inRoot(await currentRoot($), GRAPH_FILE), `${JSON.stringify(next, null, 2)}\n`)
+  await publishLive($).catch(() => undefined)
+}
+
 export const register: Register = on => {
   on('session.end', async ($, e, next) => {
     const now = await $.clock.now()
@@ -1179,6 +1231,49 @@ export const register: Register = on => {
           },
         },
         required: ['component', 'files'],
+      },
+    })
+    await $.tool.register({
+      name: 'arch_breakdown',
+      description: "Save a component's internal parts and how they connect, for the notepad's zoomed-in diagram. Replaces that component's breakdown.",
+      inputSchema: {
+        type: 'object',
+        properties: {
+          component: { type: 'string', description: 'The architecture node id.' },
+          parts: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                id: { type: 'string' },
+                label: { type: 'string' },
+                role: { type: 'string', enum: PART_ROLES },
+                path: { type: 'string', description: 'Project-relative file or folder.' },
+                line: { type: 'number' },
+                summary: { type: 'string', description: 'One plain sentence on its purpose.' },
+              },
+              required: ['id', 'label'],
+            },
+          },
+          edges: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: { from: { type: 'string' }, to: { type: 'string', description: 'A part id, or another component id.' }, label: { type: 'string' } },
+              required: ['from', 'to'],
+            },
+          },
+        },
+        required: ['component', 'parts'],
+      },
+    })
+    await $.tool.register({
+      name: 'explain_part',
+      description: "Save an in-depth explanation (Markdown) of one part of a component, shown in the notepad when the person opens that part.",
+      inputSchema: {
+        type: 'object',
+        properties: { component: { type: 'string' }, part: { type: 'string' }, detail: { type: 'string', description: 'Markdown, under 200 words.' } },
+        required: ['component', 'part', 'detail'],
       },
     })
     await $.tool.register({
@@ -1408,6 +1503,54 @@ export const register: Register = on => {
     await update($, graphAtom, () => next)
     await $.fs.write(inRoot(await currentRoot($), GRAPH_FILE), `${JSON.stringify(next, null, 2)}\n`)
     return { result: `Saved ${given.length} file summar${given.length === 1 ? 'y' : 'ies'} for ${node.label}.` }
+  })
+
+  on('tool.call', { tool: BREAKDOWN_TOOL }, async ($, e) => {
+    const args = e as unknown as { component?: string; parts?: Partial<ArchPart>[]; edges?: { from?: string; to?: string; label?: string }[] }
+    const graph = await read($, graphAtom)
+    const node = graph?.nodes.find(n => n.id === args.component)
+    if (!graph || !node) return { result: `No component "${args.component}" on the map. Use an id from ${GRAPH_FILE}.` }
+    const before = new Map((node.breakdown?.parts ?? []).map(p => [p.id, p]))
+    const parts: ArchPart[] = (args.parts ?? [])
+      .filter(p => typeof p.id === 'string' && p.id.trim() && typeof p.label === 'string')
+      .slice(0, 14)
+      .map(p => {
+        const id = String(p.id).trim()
+        const was = before.get(id)
+        return {
+          id,
+          label: String(p.label).slice(0, 60),
+          ...(p.role && PART_ROLES.includes(p.role) ? { role: p.role } : {}),
+          ...(p.path ? { path: cleanRoot(p.path) } : {}),
+          ...(typeof p.line === 'number' ? { line: p.line } : {}),
+          ...(p.summary ? { summary: String(p.summary).slice(0, 200) } : {}),
+          // An explanation stays with a part that keeps its id.
+          ...(was?.detail ? { detail: was.detail, detailAt: was.detailAt } : {}),
+        }
+      })
+    const ids = new Set([...parts.map(p => p.id), ...graph.nodes.map(n => n.id)])
+    const edges = (args.edges ?? [])
+      .filter(x => x.from && x.to && ids.has(x.from) && ids.has(x.to))
+      .map(x => ({ from: String(x.from), to: String(x.to), ...(x.label ? { label: String(x.label).slice(0, 40) } : {}) }))
+    const now = await $.clock.now()
+    await saveNode($, graph, node.id, n => ({ ...n, breakdown: { parts, edges, at: now } }))
+    return { result: `Saved ${parts.length} parts and ${edges.length} connections for ${node.label}; the notepad shows them when the component is opened.` }
+  })
+
+  on('tool.call', { tool: EXPLAIN_TOOL }, async ($, e) => {
+    const args = e as unknown as { component?: string; part?: string; detail?: string }
+    const graph = await read($, graphAtom)
+    const node = graph?.nodes.find(n => n.id === args.component)
+    const part = node?.breakdown?.parts.find(p => p.id === args.part)
+    if (!graph || !node || !part) return { result: `No part "${args.part}" in ${args.component}'s breakdown.` }
+    const detail = String(args.detail ?? '').trim().slice(0, 6000)
+    if (!detail) return { result: 'Nothing to save: pass the explanation as detail.' }
+    const now = await $.clock.now()
+    await saveNode($, graph, node.id, n => ({
+      ...n,
+      breakdown: n.breakdown ? { ...n.breakdown, parts: n.breakdown.parts.map(p => (p.id === part.id ? { ...p, detail, detailAt: now } : p)) } : n.breakdown,
+    }))
+    return { result: `Saved. It shows when ${part.label} is opened in the notepad.` }
   })
 
   on('tool.call', { tool: STANDUP_TOOL }, async ($, e) => {
