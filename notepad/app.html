@@ -131,7 +131,12 @@
   .tree .row { display: flex; align-items: baseline; gap: 6px; padding: 3px 4px; border-radius: 5px; cursor: pointer; }
   .tree .row:hover { background: var(--paper2); }
   .tree .row .name { white-space: nowrap; }
-  .tree .row .sum { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1; }
+  .tree .row.file .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .tree .row.file.has-sum { padding-bottom: 0; }
+  /* The summary gets its own line under the name, wrapped in full. */
+  .tree .sum-line { color: var(--muted); font-size: 12px; line-height: 1.45; padding: 1px 8px 7px 0; cursor: pointer; white-space: normal; }
+  .tree .sum-line:hover { color: var(--ink); }
+  .tree .sum-line.none { color: var(--soft); font-style: italic; }
   .tree .folder .name { color: var(--muted); }
   .tree .tag { font-size: 10px; color: var(--soft); white-space: nowrap; }
   .tree .tag.today { color: var(--accent); }
@@ -588,7 +593,8 @@ const renderTree = (node, prefix, depth) => {
       f.isChanged && !f.isToday ? '<span class="tag">◦ uncommitted</span>' : '',
       f.isStale ? '<span class="tag" title="Changed since its summary was written">may be out of date</span>' : '',
     ].join('')
-    out.push(`<div class="row file" data-file="${esc(f.path)}" style="padding-left:${pad + 12}px"><span class="name">${esc(name)}</span><span class="sum" title="${esc(sum)}">${esc(sum)}</span>${tags}<button class="open" data-open="${esc(f.path)}" title="Open in editor">↗</button></div>`)
+    out.push(`<div class="row file${sum ? ' has-sum' : ''}" data-file="${esc(f.path)}" style="padding-left:${pad + 12}px" title="Click for its functions"><span class="name">${esc(name)}</span>${tags}<button class="open" data-open="${esc(f.path)}" title="Open in editor">↗</button></div>`)
+    if (sum) out.push(`<div class="sum-line" data-file="${esc(f.path)}" style="padding-left:${pad + 16}px">${esc(sum)}</div>`)
     if (detail?.isOpen) {
       const syms = detail.symbols.filter(s => s.exported || detail.symbols.length <= 12)
       out.push(`<div class="detail" style="margin-left:${pad + 22}px">${detail.doc && f.summary ? `<div class="doc">${esc(detail.doc)}</div>` : ''}${syms.length ? syms.map(s => `<span class="sym" data-open="${esc(f.path)}" data-line="${s.line}">${esc(s.name)} <i>:${s.line}</i></span>`).join('') : '<span class="hint">No top-level functions found.</span>'}<div class="hint">${detail.lines ?? '?'} lines</div></div>`)
