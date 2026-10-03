@@ -473,7 +473,7 @@ const startNotepad = async ($: EngineInterface): Promise<string | undefined> => 
 type NotepadAsk =
   | { kind: 'describe'; component: string; label: string; files: string[] }
   | { kind: 'board'; title: string; png: string; md: string; note: string; target?: string; targetName?: string }
-  | { kind: 'standup'; scope: 'all' | 'session' }
+  | { kind: 'standup'; scope: 'all' | 'session'; session?: string; names?: Record<string, string> }
   | { kind: 'breakdown'; component: string }
   | { kind: 'explain'; component: string; part: string }
 
@@ -489,7 +489,9 @@ const handleAsk = async ($: EngineInterface, json: string) => {
     submitSoon($, describePrompt(request.component, request.label, request.files))
     $.ui.toast(`arch-live: asked Claude to describe ${request.files.length} ${request.label} files`)
   } else if (request.kind === 'standup') {
-    await askForStandup($, request.scope === 'session')
+    // An older notepad sends scope "session" alone: this session.
+    const one = request.session ?? (request.scope === 'session' ? await $.session.id() : null)
+    await askForStandup($, one, request.names)
   } else if (request.kind === 'breakdown' || request.kind === 'explain') {
     const graph = await read($, graphAtom)
     const node = graph?.nodes.find(n => n.id === request.component)
@@ -958,17 +960,18 @@ const standupPrompt = (scope: string, since: number, brief: string, detail: stri
 
 // One click: the window's journal goes to Claude, which writes the standup
 // and saves it with save_standup.
-const askForStandup = async ($: EngineInterface, isSession: boolean) => {
+// `session` limits it to one session; `names` are the names the notepad shows
+// (the Claude app's titles), so the standup says what the sidebar says.
+const askForStandup = async ($: EngineInterface, session: string | null, names?: Record<string, string>) => {
   const now = await $.clock.now()
   const since = await standupSince($, now)
-  const me = await $.session.id()
   const all = await recentDays($)
-  const days = isSession ? all.map(d => ({ ...d, entries: d.entries.filter(e => e.session === me) })) : all
-  const sessions = await sessionNames($)
+  const days = session ? all.map(d => ({ ...d, entries: d.entries.filter(e => e.session === session) })) : all
+  const sessions = { ...(await sessionNames($)), ...(names ?? {}) }
   const graph = (await $.state.get({ plugin: 'arch-live', key: 'graph' })).value ?? null
   const title = graph?.title ?? (await projectPath($)).split('/').pop() ?? 'Project'
   const brief = buildStandup({ title, since, now, days, graph, sessions })
-  const scope = isSession ? `this session: ${sessions[me] ?? 'unnamed'}` : 'all sessions'
+  const scope = session ? (sessions[session] ?? 'unnamed session') : 'all sessions'
   submitSoon($, standupPrompt(scope, since, brief, standupDetail({ since, days, sessions })))
   $.ui.toast('arch-live: asked Claude to write your standup; it starts when Claude is free')
 }
@@ -1657,7 +1660,7 @@ export const register: Register = on => {
         <Box flexDirection="column" gap={1}>
           {tabs}
           <Box flexDirection="row" gap={1} flexWrap="wrap">
-            <Button key="standup-write" label="✦ Write with Claude" variant="primary" onPress={() => askForStandup($, false)} />
+            <Button key="standup-write" label="✦ Write with Claude" variant="primary" onPress={() => askForStandup($, null)} />
             <Button
               key="standup-copy"
               label="Copy"

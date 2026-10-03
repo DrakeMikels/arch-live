@@ -39,6 +39,10 @@
   body.railless .rail { display: none; }
   header { grid-column: 1 / -1; display: flex; align-items: center; gap: 16px; padding: 10px 18px; border-bottom: 1px solid var(--rule); }
   header h1 { font-size: 14px; font-weight: 600; margin: 0; letter-spacing: .01em; }
+  .navtoggle { border: 1px solid transparent; background: none; border-radius: 7px; padding: 3px 5px; cursor: pointer; color: var(--muted); display: inline-flex; margin-left: -6px; }
+  .navtoggle:hover { border-color: var(--rule); color: var(--ink); }
+  .app.navless .navtoggle .fill { opacity: 0; }
+  .app.wide .navtoggle { display: none; }
   .live { display: inline-flex; align-items: center; gap: 6px; color: var(--soft); font-size: 11px; }
   .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--soft); }
   .live.on .dot { background: var(--accent); animation: pulse 1.6s infinite; }
@@ -292,6 +296,7 @@
 <body>
 <div class="app" id="app">
   <header>
+    <button class="navtoggle" id="navToggle" data-collapse="nav" title="Hide the sidebar (\)" aria-label="Toggle the sidebar"><svg width="18" height="18" viewBox="0 0 18 18"><rect x="1.5" y="2.5" width="15" height="13" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M6.5 2.5v13" stroke="currentColor" stroke-width="1.4"/><rect class="fill" x="2.2" y="3.2" width="3.6" height="11.6" rx="1.6" fill="currentColor"/></svg></button>
     <h1 id="title">Notepad</h1>
     <span class="live" id="live"><span class="dot"></span><span id="liveText">connecting</span></span>
     <div class="tabs" role="tablist">
@@ -377,7 +382,7 @@
         <div id="standupCurrent">
           <div class="bar">
             <button class="btn accent" id="writeStandup" title="Claude writes your standup notes from the journal">✦ Write with Claude</button>
-            <select id="standupScope" aria-label="What to cover"><option value="all">All sessions</option><option value="session">This session</option></select>
+            <select id="standupScope" aria-label="Which sessions to cover"><option value="">All sessions</option></select>
             <button class="btn primary" id="copyStandup">Copy for Slack</button>
             <button class="btn" id="given" title="After your meeting: saves this standup to History, then the next one covers only what happens from now on. Open todos and blockers carry over.">Archive &amp; start fresh</button>
           </div>
@@ -468,6 +473,7 @@ const applyLayout = () => {
   rail.classList.toggle('closed', !!layout.railHidden)
   nav.querySelector('button').textContent = layout.navHidden ? '›' : '‹'
   nav.querySelector('button').title = layout.navHidden ? 'Show days (\\)' : 'Hide days (\\)'
+  $('#navToggle').title = layout.navHidden ? 'Show the sidebar (\\)' : 'Hide the sidebar (\\)'
   rail.querySelector('button').textContent = layout.railHidden ? '‹' : '›'
   rail.querySelector('button').title = layout.railHidden ? 'Show this panel' : 'Hide this panel'
 }
@@ -523,6 +529,12 @@ let viewSession = null // a session id to show its history, or null for the day
 const sessionById = id => (data?.sessions ?? []).find(s => s.id === id)
 const sessionName = id => (id ? (sessionById(id)?.name ?? 'Unnamed session') : 'Earlier work')
 const isOpenSession = s => s && !s.endedAt
+// The sessions the sidebar lists, newest first: any with entries, any open
+// now, and this one. The standup picker offers the same list.
+const sidebarSessions = () => {
+  const counts = data?.sessionCounts ?? {}
+  return (data?.sessions ?? []).filter(s => counts[s.id] || isOpenSession(s) || s.id === data.self).sort((a, b) => (b.lastAt ?? 0) - (a.lastAt ?? 0))
+}
 
 // Light or dark: the viewer's choice (Auto, Light, Dark, kept in this browser),
 // else the theme's own mode, else the system setting. data-theme on <html>
@@ -604,7 +616,7 @@ const renderNav = () => {
   const group = ts => (ts >= t0 ? 'Today' : ts >= t0 - DAY ? 'Yesterday' : ts >= t0 - 6 * DAY ? 'This week' : 'Older')
   const when = ts => (ts >= t0 ? time(ts) : ts >= t0 - 6 * DAY ? new Date(ts).toLocaleDateString([], { weekday: 'short' }) : new Date(ts).toLocaleDateString([], { month: 'short', day: 'numeric' }))
   const counts = data.sessionCounts ?? {}
-  const list = (data.sessions ?? []).filter(s => counts[s.id] || isOpenSession(s) || s.id === data.self).sort((a, b) => (b.lastAt ?? 0) - (a.lastAt ?? 0))
+  const list = sidebarSessions()
   const rows = []
   let heading = ''
   for (const s of list) {
@@ -699,7 +711,13 @@ const renderStandup = async () => {
   $('#historyCount').textContent = cur.archivedCount ? `(${cur.archivedCount})` : ''
   if (standupView === 'history') return renderHistory()
   $('#standup').innerHTML = md(cur.markdown)
-  $('#standupScope').style.display = cur.hasSession ? '' : 'none'
+  // The sessions in this standup's window, named as in the sidebar.
+  const pick = $('#standupScope')
+  const chosen = pick.value
+  const inWindow = sidebarSessions()
+  pick.innerHTML = `<option value="">All sessions</option>${inWindow.map(s => `<option value="${esc(s.id)}">${esc(sessionName(s.id))}${s.id === data.self ? ' (this one)' : ''}</option>`).join('')}`
+  pick.value = inWindow.some(s => s.id === chosen) ? chosen : ''
+  pick.style.display = inWindow.length > 1 || (inWindow.length === 1 && inWindow[0].id !== data.self) ? '' : 'none'
   $('#window').textContent = `Covers ${stamp(cur.since)} → now`
   const w = cur.written
   $('#written').innerHTML = w?.markdown
@@ -748,7 +766,8 @@ document.addEventListener('click', e => {
   if (e.target.closest('[data-download-standup]') && openStandup) downloadMd(`standup-${openStandup.id}.md`, archiveMd(openStandup))
 })
 $('#writeStandup').addEventListener('click', async () => {
-  const res = await api('/api/ask', { kind: 'standup', scope: $('#standupScope').value })
+  const one = $('#standupScope').value
+  const res = await api('/api/ask', { kind: 'standup', ...(one ? { session: one } : {}) })
   toast(res.ok ? 'Asked Claude to write your standup: it appears here when done' : 'Could not reach the session')
 })
 

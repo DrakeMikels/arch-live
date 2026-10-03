@@ -485,7 +485,8 @@ const server = http.createServer(async (req, res) => {
       const body = await readBody(req)
       // The mod builds the standup prompt itself, from the same journal.
       if (body.kind === 'standup') {
-        ask({ kind: 'standup', scope: body.scope === 'session' ? 'session' : 'all' }, self)
+        const one = isId(body.session) ? body.session : null
+        ask({ kind: 'standup', scope: one ? 'session' : 'all', ...(one ? { session: one } : {}), names: sessionNames() }, self)
         return send(res, 200, { ok: true })
       }
       if ((body.kind === 'breakdown' || body.kind === 'explain') && isId(body.component)) {
