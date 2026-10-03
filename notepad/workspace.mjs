@@ -267,5 +267,38 @@ export const createWorkspace = ({ project, logs, graph, recent }) => {
     return { title: g.title ?? '', nodes, edges: g.edges ?? [], focus: g.focus ?? [] }
   }
 
-  return { component, symbols, boardsDir, boardFile, listBoards, map }
+  // Where the map no longer matches the code: a component's entry or folders
+  // gone, top-level folders of tracked code that no component owns, and
+  // breakdowns whose files changed (or went) after Claude wrote them.
+  const NOT_CODE = new Set(['.git', '.github', '.vscode', '.idea', '.claude', '.claude-plugin', 'node_modules', 'dist', 'build', 'coverage', 'docs', 'doc', '.next', '.turbo', 'tmp', 'vendor', 'public', 'assets', 'static', 'test', 'tests', '__tests__', 'scripts', 'data'])
+  const exists = rel => fs.existsSync(path.join(project, rel))
+  const drift = async () => {
+    const g = graph()
+    const issues = []
+    if (!g?.nodes?.length) return { issues, checkedAt: Date.now() }
+    for (const n of g.nodes) {
+      for (const p of [n.path, ...(n.owns ?? [])].filter(Boolean)) {
+        if (!exists(p)) issues.push({ kind: 'missing', node: n.id, label: n.label, path: p })
+      }
+      if (n.breakdown?.parts?.length) {
+        const files = [...new Set(n.breakdown.parts.map(p => p.path).filter(Boolean))]
+        const changed = files.filter(f => !exists(f) || mtime(f) > n.breakdown.at + 1000)
+        if (changed.length) issues.push({ kind: 'breakdown', node: n.id, label: n.label, files: changed })
+      }
+    }
+    const listed = await git(['ls-files'])
+    if (listed) {
+      const counts = new Map()
+      for (const f of listed.split('\n').filter(Boolean)) {
+        const top = f.split('/')[0]
+        if (!f.includes('/') || top.startsWith('.') || NOT_CODE.has(top)) continue
+        if (componentFor(g, f)) continue
+        counts.set(top, (counts.get(top) ?? 0) + 1)
+      }
+      for (const [folder, files] of counts) if (files >= 2) issues.push({ kind: 'unmapped', folder, files })
+    }
+    return { issues, checkedAt: Date.now(), mapAt: g.updatedAt ?? 0 }
+  }
+
+  return { component, symbols, boardsDir, boardFile, listBoards, map, drift }
 }

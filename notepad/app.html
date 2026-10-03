@@ -283,6 +283,34 @@
   .modal textarea { width: 100%; min-height: 90px; border: 1px solid var(--rule); border-radius: 8px; padding: 8px 10px; background: var(--nodeFill); outline: 0; margin: 10px 0; }
   .modal .row { display: flex; gap: 8px; justify-content: flex-end; align-items: center; }
   .modal .card.ask { width: min(460px, 92vw); }
+  .modal .card.wide { width: min(720px, 94vw); max-height: 86vh; overflow-y: auto; position: relative; }
+  .modal .close { position: absolute; right: 12px; top: 10px; border: 0; background: none; font-size: 18px; color: var(--soft); cursor: pointer; }
+  .icon-btn { padding: 3px 8px; display: inline-flex; align-items: center; }
+  .settings section { border-top: 1px solid var(--rule); padding: 12px 0; }
+  .settings section:first-child { border-top: 0; }
+  .settings h4 { margin: 0 0 8px; font-size: 10px; letter-spacing: .14em; text-transform: uppercase; color: var(--soft); font-weight: 500; }
+  .settings .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; justify-content: flex-start; margin: 6px 0; }
+  .settings table { border-collapse: collapse; width: 100%; font-size: 12px; }
+  .settings td { padding: 3px 6px; border-bottom: 1px solid var(--rule); }
+  .settings td.num { text-align: right; color: var(--muted); white-space: nowrap; }
+  .settings select { border: 1px solid var(--rule); border-radius: 7px; background: var(--nodeFill); padding: 3px 8px; width: auto; margin: 0; }
+  .settings code.path { font-size: 11px; word-break: break-all; }
+  .settings .chip button { border: 0; background: none; cursor: pointer; color: var(--soft); padding: 0 0 0 4px; }
+  .settings dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; margin: 0; font-size: 12px; }
+  .settings dt { color: var(--soft); }
+  .settings dd { margin: 0; }
+  .seg { display: inline-flex; border: 1px solid var(--rule); border-radius: 8px; overflow: hidden; }
+  .seg button { border: 0; background: none; padding: 4px 12px; cursor: pointer; color: var(--muted); }
+  .seg button[aria-pressed="true"] { background: var(--accentTint); color: var(--ink); }
+  .btn.warn { border-color: #d1980b; color: #a87503; }
+  .menu.drift { min-width: 380px; max-width: 460px; }
+  .menu.drift .issue { padding: 7px 10px; border-bottom: 1px solid var(--rule); font-size: 12px; }
+  .menu.drift .issue .acts { display: flex; gap: 6px; margin-top: 5px; }
+  .menu.drift .issue b { font-weight: 600; }
+  .menu.drift .issue .btn { display: inline-flex; width: auto; border: 1px solid var(--rule); background: var(--nodeFill); padding: 2px 9px; }
+  .menu.drift .issue .btn:hover { border-color: var(--muted); background: var(--nodeFill); }
+  .menu.drift .issue .btn.accent { background: var(--accent); color: #fff; border-color: var(--accent); }
+  #map .m-warn { fill: #d1980b; font-size: 12px; cursor: pointer; }
   .modal .card.ask input { width: 100%; border: 1px solid var(--rule); border-radius: 8px; padding: 8px 10px; background: var(--nodeFill); outline: 0; margin: 12px 0; }
   .modal .card.ask input:focus, .modal .card.ask textarea:focus { border-color: var(--accent); }
   .modal .card.ask .row .hint { margin-right: auto; }
@@ -338,6 +366,8 @@
       <button role="tab" data-tab="standup" aria-selected="false">Standup <kbd>4</kbd></button>
     </div>
     <button class="mode" id="mode" title="Light, dark, or follow the system">◐ Auto</button>
+    <button class="mode icon-btn" id="helpBtn" title="Help and shortcuts (?)" aria-label="Help">?</button>
+    <button class="mode icon-btn" id="settingsBtn" title="Settings" aria-label="Settings"><svg width="15" height="15" viewBox="0 0 16 16"><path d="M8 5.2a2.8 2.8 0 1 0 0 5.6 2.8 2.8 0 0 0 0-5.6Zm6.2 3.6-.1-1.6 1.3-1-1.4-2.4-1.6.5a5.6 5.6 0 0 0-1.4-.8L10.7 2H8L7.6 3.5a5.6 5.6 0 0 0-1.4.8l-1.6-.5-1.4 2.4 1.3 1-.1.8.1.8-1.3 1 1.4 2.4 1.6-.5c.4.3.9.6 1.4.8L8 14h2.7l.3-1.5c.5-.2 1-.5 1.4-.8l1.6.5 1.4-2.4-1.3-1Z" fill="none" stroke="currentColor" stroke-width="1.2"/></svg></button>
   </header>
   <nav><div id="days"></div></nav>
   <div class="gutter" data-pane="nav"><button data-collapse="nav" title="Hide days (\)">‹</button></div>
@@ -382,6 +412,7 @@
             <option value="custom">Custom (your arrangement)</option>
           </select>
           <button class="btn" id="mapLock" title="Unlock to drag components into your own arrangement"></button>
+          <span class="exportwrap"><button class="btn warn" id="driftBtn" hidden aria-haspopup="menu"></button><div class="menu drift" id="driftMenu" role="menu" hidden></div></span>
           <span class="exportwrap"><button class="btn" id="mapExport" aria-haspopup="menu">Export ▾</button>
             <div class="menu" id="exportMenu" role="menu" hidden>
               <button data-export="png" role="menuitem">PNG image <span class="hint">2×</span></button>
@@ -442,6 +473,12 @@
       </div>
     </section>
   </main>
+</div>
+<div class="modal" id="settingsModal" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+  <div class="card wide"><button class="close" data-close-modal title="Close (Esc)">×</button><h3 id="settingsTitle">Settings</h3><div id="settingsBody" class="settings"></div></div>
+</div>
+<div class="modal" id="helpModal" role="dialog" aria-modal="true" aria-labelledby="helpTitle">
+  <div class="card wide"><button class="close" data-close-modal title="Close (Esc)">×</button><h3 id="helpTitle">How the notepad works</h3><div id="helpBody" class="settings"></div></div>
 </div>
 <div class="modal" id="askModal" role="dialog" aria-modal="true" aria-labelledby="askTitle">
   <div class="card ask">
@@ -1270,6 +1307,8 @@ const mapMarkup = (L, isExport = false) => {
     if (isOpen && pv.isQuick && !isExport) out.push(`<text x="${r.x + 14}" y="${r.y + 37 + t.label.length * 18}" class="m-sub">${r.w > 420 ? 'quick look from its files · ' : 'quick look · '}<tspan class="m-cta" data-bd="${esc(n.id)}">✦ Break down with Claude</tspan></text>`)
     if (!isExport) out.push(`<text x="${r.x + r.w - 14}" y="${r.y + 21}" text-anchor="end" class="m-chev">${isOpen ? '−' : pv.parts.length ? `+${pv.parts.length}` : ''}</text>`)
     if (!isExport && (mapData.active ?? []).includes(n.id)) out.push(`<circle cx="${r.x + r.w - 10}" cy="${r.y + 10}" r="4" class="m-active"/>`)
+    const drift = !isExport ? mapDrift.byNode?.[n.id] : null
+    if (drift?.length) out.push(`<text x="${r.x + r.w - (isOpen ? 30 : 40)}" y="${r.y + 21}" text-anchor="end" class="m-warn" data-drifticon="1"><title>${esc(drift.map(i => (i.kind === 'missing' ? `${i.path} no longer exists` : `${i.files.length} file(s) changed since the breakdown`)).join(' · '))}</title>⚠</text>`)
     if (mark) out.push(`<text x="${r.x}" y="${r.y - 7}" class="m-mark" data-markof="${esc(n.id)}"><title>Marked: ${esc(plainText(mark))} (click to see and edit marks)</title>${esc(cutText(plainText(mark), 44))}</text>`)
     out.push('</g>')
     pv.parts.forEach((part, i) => {
@@ -1348,6 +1387,7 @@ const renderDiagram = async () => {
   const next = await api('/api/graph')
   if (next.error) return
   mapData = next
+  loadDrift()
   for (const id of [...openSet]) if (!mapData.nodes.some(n => n.id === id)) openSet.delete(id)
   if (!mapView.isFitted) { mapView.isFitted = true; return fitMap() }
   animateMap(drawer?.id)
@@ -2340,6 +2380,142 @@ $('#sendNote').addEventListener('keydown', e => { if (e.key === 'Enter' && (e.me
 
 /* ---------- Shared ---------- */
 
+/* ---------- Settings, help and the map check ---------- */
+
+const openModal = id => { $(id).classList.add('on') }
+const closeModals = () => document.querySelectorAll('#settingsModal, #helpModal').forEach(m => m.classList.remove('on'))
+document.addEventListener('click', e => {
+  if (e.target.closest('[data-close-modal]') || e.target.matches('#settingsModal, #helpModal')) closeModals()
+})
+const kb = n => (n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`)
+let settingsDays = null
+
+const renderSettings = async () => {
+  const st = await api(`/api/settings${settingsDays !== null ? `?days=${settingsDays}` : ''}`)
+  const days = settingsDays ?? st.user.retention.snapshots
+  const th = data?.meta?.theme ?? {}
+  const rows = [['journal', 'Journal days'], ['boards', 'Boards'], ['snapshots', 'Board images sent to Claude'], ['standups', 'Archived standups'], ['sessions', 'Sessions and inboxes'], ['other', 'Map, settings and other']]
+  const total = Object.values(st.storage).reduce((n, k) => n + k.bytes, 0)
+  const plan = st.plan
+  $('#settingsBody').innerHTML = `
+    <section><h4>Appearance</h4><div class="row"><span class="seg">${['auto', 'light', 'dark'].map(m => `<button data-setmode="${m}" aria-pressed="${viewMode === m}">${MODES[m]}</button>`).join('')}</span><span class="hint">Kept in this browser. The ◐ button in the header does the same.</span></div></section>
+    <section><h4>Diagram style</h4>
+      <div class="row"><b>${esc(th.name || 'Editorial default')}</b>${th.source ? `<span class="hint">from ${esc(th.source)}</span>` : ''}</div>
+      <div class="row"><button class="btn" id="styleChange">Change style…</button><button class="btn" id="styleReset">Reset to default</button><span class="hint">Your style is used in every repo. Claude reads the site's colors; your fonts stay JetBrains Mono.</span></div></section>
+    <section><h4>Storage</h4>
+      <table>${rows.map(([k, label]) => `<tr><td>${label}</td><td class="num">${st.storage[k].count} file${st.storage[k].count === 1 ? '' : 's'}</td><td class="num">${kb(st.storage[k].bytes)}</td></tr>`).join('')}<tr><td><b>Total</b></td><td></td><td class="num"><b>${kb(total)}</b></td></tr></table></section>
+    <section><h4>Cleanup</h4>
+      <div class="row">Remove board images sent to Claude after <select id="retDays">${[[0, 'never'], [30, '30 days'], [90, '90 days'], [180, '180 days']].map(([v, l]) => `<option value="${v}" ${days === v ? 'selected' : ''}>${l}</option>`).join('')}</select>
+        <label class="hint"><input type="checkbox" id="retAuto" ${st.user.retention.autoClean ? 'checked' : ''}> clean up every day</label></div>
+      <div class="hint">Cleanup also removes closed sessions that never logged anything, and empty inboxes. It never removes journal days, boards or archived standups.</div>
+      <div class="row"><span>${plan.count ? `Would remove ${plan.count} file${plan.count === 1 ? '' : 's'} (${kb(plan.bytes)}): ${Object.entries(plan.byKind).map(([k, n]) => `${n} ${{ snapshot: 'board image', session: 'empty session', inbox: 'empty inbox' }[k]}${n === 1 ? '' : 's'}`).join(', ')}` : 'Nothing to clean up.'}</span>${plan.count ? '<button class="btn" id="cleanNow">Clean up now</button>' : ''}</div></section>
+    <section><h4>Map check</h4>
+      <div class="hint">Folders the map check ignores in this project (add one from the map's ⚠ menu).</div>
+      <div class="row">${st.project.ignoreFolders.length ? st.project.ignoreFolders.map(f => `<span class="chip">${esc(f)}/<button data-unignore="${esc(f)}" title="Check it again">×</button></span>`).join('') : '<span class="hint">None.</span>'}</div></section>
+    <section><h4>About</h4><dl>
+      <dt>Notepad address</dt><dd><code class="path">${esc(st.address)}</code> <button class="btn tiny" id="copyAddress">Copy</button></dd>
+      <dt>This project</dt><dd><code class="path">${esc(st.paths.project)}</code></dd>
+      <dt>Journal folder</dt><dd><code class="path">${esc(st.paths.logs)}</code></dd>
+      <dt>Your settings</dt><dd><code class="path">${esc(st.paths.home)}</code></dd>
+      <dt>Version</dt><dd>arch-live ${esc(st.version)}</dd></dl></section>`
+  $('#settingsBody').dataset.address = st.address
+}
+const saveRetention = async () => {
+  await api('/api/settings', { retention: { snapshots: Number($('#retDays').value), autoClean: $('#retAuto').checked } })
+}
+$('#settingsBtn').addEventListener('click', async () => { settingsDays = null; await renderSettings(); openModal('#settingsModal') })
+$('#settingsBody').addEventListener('change', async e => {
+  if (e.target.id === 'retDays' || e.target.id === 'retAuto') { settingsDays = Number($('#retDays').value); await saveRetention(); renderSettings() }
+})
+$('#settingsBody').addEventListener('click', async e => {
+  const t = e.target
+  const m = t.closest('[data-setmode]')
+  if (m) { viewMode = m.dataset.setmode; try { localStorage.setItem('arch-live-mode', viewMode) } catch {} applyTheme(); modeChanged(); return renderSettings() }
+  if (t.closest('#styleChange')) {
+    const url = await askText({ title: 'Change diagram style', body: 'Claude reads this website\'s colors and makes them your diagram style, for every repo.', placeholder: 'e.g. stripe.com', ok: 'Use this site' })
+    if (!url?.trim()) return
+    const res = await api('/api/ask', { kind: 'brand', url: url.trim() })
+    return toast(res.ok ? 'Asked Claude to read that site\'s colors: the style changes when it is done' : 'Enter a website address, like stripe.com')
+  }
+  if (t.closest('#styleReset')) {
+    if (!(await askConfirm({ title: 'Reset the diagram style?', body: 'Back to the editorial default, in every repo.', ok: 'Reset' }))) return
+    const res = await api('/api/ask', { kind: 'theme-default' })
+    return toast(res.ok ? 'Resetting the style' : 'Could not reach the session')
+  }
+  if (t.closest('#cleanNow')) {
+    const days = Number($('#retDays').value)
+    if (!(await askConfirm({ title: 'Clean up now?', body: 'Removes the files listed. Journal days, boards and archived standups are kept.', ok: 'Clean up', isDanger: true }))) return
+    const res = await api('/api/cleanup', { days })
+    toast(res.ok ? `Removed ${res.removed} file${res.removed === 1 ? '' : 's'} (${kb(res.bytes)})` : 'Could not clean up')
+    return renderSettings()
+  }
+  const un = t.closest('[data-unignore]')
+  if (un) {
+    const st = await api('/api/settings')
+    await api('/api/settings', { ignoreFolders: st.project.ignoreFolders.filter(f => f !== un.dataset.unignore) })
+    renderSettings(); return loadDrift()
+  }
+  if (t.closest('#copyAddress')) { await navigator.clipboard.writeText($('#settingsBody').dataset.address); toast('Address copied: bookmark it to reopen the notepad') }
+})
+
+// Help: what each part does and every shortcut.
+const HELP = [
+  ['Journal', 'Every Claude turn, with its summary in plain STE English, and your own notes, todos, blockers and decisions. Click a session in the sidebar for its whole history. Tick, untick, edit (✎ or double-click) here or in the right panel. Search every day from the box, or press /.'],
+  ['Diagram', 'The live map of the repo. Click a component to open it in place and see its parts; click a numbered part for its purpose and Explain in depth. ⌥-click marks a component; marks stay until cleared in the drawer. Pick a layout, or unlock to drag components and bend lines into your own arrangement. Export as PNG, SVG or Mermaid. ⚠ means the map may be out of date.'],
+  ['Board', 'A whiteboard: pen, shapes, arrows, text, code blocks and sticky notes, optionally over the diagram. Send to Claude gives Claude the picture and the exact text, in this session or another open one.'],
+  ['Standup', 'Write with Claude turns the journal into meeting notes for all sessions or one. Copy for Slack, then Archive & start fresh after the meeting; History keeps every standup.'],
+]
+const KEYS = [
+  ['1 – 4', 'Journal, Diagram, Board, Standup'], ['N', 'Write a note'], ['/', 'Search the journal'], ['⌥1 – ⌥4', 'Note, todo, blocker, decision'],
+  ['@', 'Tag a component in a note'], ['⌘B ⌘I ⌘E ⌘K', 'Bold, italic, code, link'], ['⌘↵', 'Save an edit'], ['Esc', 'Cancel, close'],
+  ['\\', 'Hide or show the sidebar'], ['[  ]', 'Previous or next day'], ['?', 'This help'],
+  ['Board: V H P R O A L T C N E', 'Select, pan, pen, rectangle, ellipse, arrow, line, text, code, sticky, eraser'], ['Board: ⌘Z ⇧⌘Z ⌘D F', 'Undo, redo, duplicate, fit'],
+]
+$('#helpBody').innerHTML = `${HELP.map(([t, d]) => `<section><h4>${t}</h4><div>${esc(d)}</div></section>`).join('')}<section><h4>Shortcuts</h4><table>${KEYS.map(([k, d]) => `<tr><td><kbd>${esc(k)}</kbd></td><td>${esc(d)}</td></tr>`).join('')}</table></section><section><h4>In Claude Code</h4><div>/arch shows the pane · /notepad opens this page · /n, /todo, /blocker, /decision add to the journal · /done closes one · /standup copies your standup · /arch-map re-maps · /arch-theme changes the style · /arch-export writes the diagram as SVG.</div></section>`
+$('#helpBtn').addEventListener('click', () => openModal('#helpModal'))
+
+// The map check: where the map no longer matches the code.
+let mapDrift = { issues: [], byNode: {} }
+const loadDrift = async () => {
+  const d = await api('/api/drift')
+  if (d.error) return
+  const byNode = {}
+  for (const i of d.issues) if (i.node) (byNode[i.node] ??= []).push(i)
+  mapDrift = { ...d, byNode }
+  const n = d.issues.length
+  $('#driftBtn').hidden = !n
+  $('#driftBtn').textContent = `⚠ Map may be out of date (${n})`
+  $('#driftMenu').innerHTML = d.issues.map(i => {
+    if (i.kind === 'missing') return `<div class="issue"><b>${esc(i.label)}</b>: <code>${esc(i.path)}</code> no longer exists.<div class="acts"><button class="btn tiny" data-drift-remap>Re-map with Claude</button></div></div>`
+    if (i.kind === 'breakdown') return `<div class="issue"><b>${esc(i.label)}</b>: ${i.files.length} file${i.files.length === 1 ? '' : 's'} changed since its breakdown (${i.files.slice(0, 3).map(f => `<code>${esc(f.split('/').pop())}</code>`).join(', ')}${i.files.length > 3 ? '…' : ''}).<div class="acts"><button class="btn tiny" data-drift-breakdown="${esc(i.node)}">Break down again</button></div></div>`
+    return `<div class="issue"><code>${esc(i.folder)}/</code> (${i.files} files) is not part of any component.<div class="acts"><button class="btn tiny" data-drift-remap>Re-map with Claude</button><button class="btn tiny" data-drift-ignore="${esc(i.folder)}">Ignore this folder</button></div></div>`
+  }).join('') + (n ? '<div class="issue"><button class="btn tiny accent" data-drift-remap>Re-map the whole project with Claude</button></div>' : '')
+  if (mapLayout) drawMap(mapLayout)
+}
+$('#driftBtn').addEventListener('click', e => { e.stopPropagation(); $('#driftMenu').hidden = !$('#driftMenu').hidden })
+document.addEventListener('click', e => { if (!e.target.closest('#driftMenu, #driftBtn')) $('#driftMenu').hidden = true })
+$('#driftMenu').addEventListener('click', async e => {
+  const t = e.target
+  if (t.closest('[data-drift-remap]')) {
+    $('#driftMenu').hidden = true
+    const res = await api('/api/ask', { kind: 'map' })
+    return toast(res.ok ? 'Asked Claude to re-map the project: the map redraws when it is done' : 'Could not reach the session')
+  }
+  const bd = t.closest('[data-drift-breakdown]')
+  if (bd) {
+    $('#driftMenu').hidden = true
+    const res = await api('/api/ask', { kind: 'breakdown', component: bd.dataset.driftBreakdown })
+    return toast(res.ok ? 'Asked Claude to break it down again' : 'Could not reach the session')
+  }
+  const ig = t.closest('[data-drift-ignore]')
+  if (ig) {
+    const st = await api('/api/settings')
+    await api('/api/settings', { ignoreFolders: [...st.project.ignoreFolders, ig.dataset.driftIgnore] })
+    toast(`${ig.dataset.driftIgnore}/ ignored: undo it in Settings`)
+    return loadDrift()
+  }
+})
+
 /* ---------- The notepad's own dialogs ---------- */
 
 // In place of the browser's prompt and confirm: same keys (Enter or ⌘↵ to
@@ -2718,6 +2894,7 @@ document.addEventListener('keydown', e => {
   const k = e.key.toLowerCase()
   const mod = e.metaKey || e.ctrlKey
   if (!mod && !e.altKey && /^[1-4]$/.test(k)) return setTab(['journal', 'diagram', 'board', 'standup'][Number(k) - 1])
+  if (e.key === 'Escape' && document.querySelector('#settingsModal.on, #helpModal.on')) return closeModals()
   if (e.key === 'Escape' && drawer && tab === 'diagram') return closeDrawer()
   if (tab === 'board') {
     if (mod && k === 'z') { e.preventDefault(); return e.shiftKey ? redo() : undo() }
@@ -2738,6 +2915,7 @@ document.addEventListener('keydown', e => {
   }
   if (k === 'n') { setTab('journal'); input.focus(); e.preventDefault() }
   if (e.key === '/') { setTab('journal'); $('#search').focus(); e.preventDefault() }
+  if (e.key === '?') { openModal('#helpModal'); e.preventDefault() }
   if (e.key === '\\') { togglePane('nav'); e.preventDefault() }
   if (k === '[' || k === ']') {
     const list = data.dates.map(d => d.date)

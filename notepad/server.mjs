@@ -264,6 +264,71 @@ const search = q => {
   return { hits: hits.slice(0, 150), total: hits.length }
 }
 
+// Settings: yours (~/.claude/arch-live/settings.json) and this project's
+// (logs/<project>/settings.json, e.g. folders the drift check ignores).
+const HOME_SETTINGS = path.resolve(LOGS, '..', '..', 'settings.json')
+const PROJECT_SETTINGS = path.join(LOGS, 'settings.json')
+const DEFAULTS = { retention: { snapshots: 0, autoClean: false } }
+const userSettings = () => {
+  const s = readJson(HOME_SETTINGS, {})
+  return { ...DEFAULTS, ...s, retention: { ...DEFAULTS.retention, ...(s.retention ?? {}) } }
+}
+const projectSettings = () => ({ ignoreFolders: [], ...readJson(PROJECT_SETTINGS, {}) })
+
+// What the journal folder holds, by kind, and what a cleanup may remove:
+// only throwaway files (board snapshots sent to Claude, empty inboxes, closed
+// sessions that never logged anything), never days, boards or standups.
+const DAY_FILE = /^\d{4}-\d{2}-\d{2}\.(json|web\.jsonl)$/
+const sizeOf = f => { try { return fs.statSync(f).size } catch { return 0 } }
+const listDir = d => { try { return fs.readdirSync(d) } catch { return [] } }
+const storage = () => {
+  const kinds = { journal: [0, 0], boards: [0, 0], snapshots: [0, 0], standups: [0, 0], sessions: [0, 0], other: [0, 0] }
+  const add = (k, f) => { kinds[k][0] += 1; kinds[k][1] += sizeOf(f) }
+  for (const n of listDir(LOGS)) {
+    const f = path.join(LOGS, n)
+    if (DAY_FILE.test(n)) add('journal', f)
+    else if (n === 'boards') for (const b of listDir(f)) add(/-\d{4}-\d{2}-\d{2}T[\d-]+Z\.(png|md)$/.test(b) ? 'snapshots' : 'boards', path.join(f, b))
+    else if (n === 'standups') for (const b of listDir(f)) add('standups', path.join(f, b))
+    else if (n === 'sessions' || n === 'inbox') for (const b of listDir(f)) add('sessions', path.join(f, b))
+    else if (fs.statSync(f).isFile()) add('other', f)
+  }
+  return Object.fromEntries(Object.entries(kinds).map(([k, [count, bytes]]) => [k, { count, bytes }]))
+}
+const cleanupPlan = days => {
+  const remove = []
+  const cutoff = Date.now() - days * 86_400_000
+  if (days > 0) {
+    for (const b of listDir(path.join(LOGS, 'boards'))) {
+      const f = path.join(LOGS, 'boards', b)
+      if (/-\d{4}-\d{2}-\d{2}T[\d-]+Z\.(png|md)$/.test(b) && fs.statSync(f).mtimeMs < cutoff) remove.push({ kind: 'snapshot', file: f, bytes: sizeOf(f) })
+    }
+  }
+  const logged = new Set(recent().flatMap(d => d.entries).map(e => e.session).filter(Boolean))
+  for (const s of sessions()) {
+    if (s.endedAt && !logged.has(s.id) && s.id !== SELF) remove.push({ kind: 'session', file: sessionFile(s.id), bytes: sizeOf(sessionFile(s.id)) })
+  }
+  for (const b of listDir(path.join(LOGS, 'inbox'))) {
+    const f = path.join(LOGS, 'inbox', b)
+    if (sizeOf(f) === 0) remove.push({ kind: 'inbox', file: f, bytes: 0 })
+  }
+  return remove
+}
+const runCleanup = days => {
+  const plan = cleanupPlan(days)
+  let removed = 0
+  for (const r of plan) {
+    try { fs.unlinkSync(r.file); removed += 1 } catch {}
+  }
+  return { removed, bytes: plan.reduce((n, r) => n + r.bytes, 0) }
+}
+// With auto clean on, once at start and then daily.
+const autoClean = () => {
+  const r = userSettings().retention
+  if (r.autoClean && r.snapshots > 0) runCleanup(r.snapshots)
+}
+setTimeout(autoClean, 30_000).unref()
+setInterval(autoClean, 86_400_000).unref()
+
 const workspace = createWorkspace({ project: PROJECT, logs: LOGS, graph, recent })
 
 // The standup window: since the last one was archived (at most two weeks),
@@ -476,6 +541,41 @@ const server = http.createServer(async (req, res) => {
       const found = await workspace.component(url.searchParams.get('id'))
       return found ? send(res, 200, found) : send(res, 404, { error: 'no such component' })
     }
+    if (req.method === 'GET' && url.pathname === '/api/drift') {
+      const ignore = new Set(projectSettings().ignoreFolders)
+      const d = await workspace.drift()
+      return send(res, 200, { ...d, issues: d.issues.filter(i => !(i.kind === 'unmapped' && ignore.has(i.folder))) })
+    }
+    if (req.method === 'GET' && url.pathname === '/api/settings') {
+      const days = Number(url.searchParams.get('days') ?? userSettings().retention.snapshots) || 0
+      const plan = cleanupPlan(days)
+      return send(res, 200, {
+        user: userSettings(),
+        project: projectSettings(),
+        storage: storage(),
+        plan: { count: plan.length, bytes: plan.reduce((n, r) => n + r.bytes, 0), byKind: plan.reduce((acc, r) => ({ ...acc, [r.kind]: (acc[r.kind] ?? 0) + 1 }), {}) },
+        paths: { logs: LOGS, project: PROJECT, home: path.dirname(HOME_SETTINGS) },
+        version: readJson(path.join(here, '..', '.claude-plugin', 'plugin.json'), {}).version ?? '',
+        address: `http://127.0.0.1:${server.address()?.port}/?t=${TOKEN}`,
+      })
+    }
+    if (req.method === 'POST' && url.pathname === '/api/settings') {
+      const body = await readBody(req)
+      if (body.retention) {
+        const u = userSettings()
+        const snapshots = [0, 30, 90, 180].includes(Number(body.retention.snapshots)) ? Number(body.retention.snapshots) : u.retention.snapshots
+        fs.writeFileSync(HOME_SETTINGS, `${JSON.stringify({ ...u, retention: { snapshots, autoClean: !!body.retention.autoClean } }, null, 2)}\n`)
+      }
+      if (Array.isArray(body.ignoreFolders)) {
+        const folders = [...new Set(body.ignoreFolders.filter(f => typeof f === 'string' && /^[\w.-]{1,80}$/.test(f)))]
+        fs.writeFileSync(PROJECT_SETTINGS, `${JSON.stringify({ ...projectSettings(), ignoreFolders: folders }, null, 2)}\n`)
+      }
+      return send(res, 200, { ok: true })
+    }
+    if (req.method === 'POST' && url.pathname === '/api/cleanup') {
+      const { days } = await readBody(req)
+      return send(res, 200, { ok: true, ...runCleanup([0, 30, 90, 180].includes(Number(days)) ? Number(days) : 0) })
+    }
     if (req.method === 'GET' && url.pathname === '/api/graph') {
       // Marks come from today's journal, so a new one shows at once; what
       // Claude is working in comes from the mod.
@@ -507,6 +607,18 @@ const server = http.createServer(async (req, res) => {
       if (body.kind === 'standup') {
         const one = isId(body.session) ? body.session : null
         ask({ kind: 'standup', scope: one ? 'session' : 'all', ...(one ? { session: one } : {}), names: sessionNames() }, self)
+        return send(res, 200, { ok: true })
+      }
+      if (body.kind === 'map') {
+        ask({ kind: 'map' }, self)
+        return send(res, 200, { ok: true })
+      }
+      if (body.kind === 'brand' && typeof body.url === 'string' && /^(https?:\/\/)?[^\s/]+\.[^\s]+$/i.test(body.url.trim())) {
+        ask({ kind: 'brand', url: body.url.trim().slice(0, 300) }, self)
+        return send(res, 200, { ok: true })
+      }
+      if (body.kind === 'theme-default') {
+        ask({ kind: 'theme-default' }, self)
         return send(res, 200, { ok: true })
       }
       if ((body.kind === 'breakdown' || body.kind === 'explain') && isId(body.component)) {

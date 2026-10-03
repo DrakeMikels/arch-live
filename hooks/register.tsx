@@ -475,6 +475,9 @@ type NotepadAsk =
   | { kind: 'board'; title: string; png: string; md: string; note: string; target?: string; targetName?: string }
   | { kind: 'standup'; scope: 'all' | 'session'; session?: string; names?: Record<string, string> }
   | { kind: 'breakdown'; component: string }
+  | { kind: 'map' }
+  | { kind: 'brand'; url: string }
+  | { kind: 'theme-default' }
   | { kind: 'explain'; component: string; part: string }
 
 // A request the person made in the notepad, run as a prompt in this session.
@@ -492,6 +495,14 @@ const handleAsk = async ($: EngineInterface, json: string) => {
     // An older notepad sends scope "session" alone: this session.
     const one = request.session ?? (request.scope === 'session' ? await $.session.id() : null)
     await askForStandup($, one, request.names)
+  } else if (request.kind === 'map') {
+    await startMap($, '')
+  } else if (request.kind === 'brand') {
+    startBrand($, request.url)
+  } else if (request.kind === 'theme-default') {
+    await setDefaultTheme($)
+    await publishLive($).catch(() => undefined)
+    $.ui.toast('arch-live: diagram style reset to the editorial default')
   } else if (request.kind === 'breakdown' || request.kind === 'explain') {
     const graph = await read($, graphAtom)
     const node = graph?.nodes.find(n => n.id === request.component)
@@ -813,7 +824,7 @@ const publishLive = async ($: EngineInterface) => {
     project: await projectPath($),
     title: graph?.title ?? (await projectPath($)).split('/').pop() ?? 'Project',
     nodes: (graph?.nodes ?? []).map(n => ({ id: n.id, label: n.label, kind: n.kind, path: n.path ?? null, line: n.line ?? null })),
-    theme: { light: theme.light, dark: theme.dark, fonts: theme.fonts, mode: theme.mode },
+    theme: { light: theme.light, dark: theme.dark, fonts: theme.fonts, mode: theme.mode, name: theme.name ?? null, source: theme.source ?? null },
     // For the notepad's map: today's marks and the components Claude is in now.
     marks: overlay.marks ?? {},
     active,
