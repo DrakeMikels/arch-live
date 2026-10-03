@@ -482,7 +482,18 @@ const server = http.createServer(async (req, res) => {
       // A mark stays on the map until it is cleared, whatever day it was made.
       const marks = {}
       for (const e of recent().flatMap(d => d.entries).sort((a, b) => a.ts - b.ts)) if (e.type === 'mark' && e.component && !e.done) marks[e.component] = e.text === '·' ? 'marked' : e.text
-      return send(res, 200, { ...(await workspace.map()), marks, active: meta().active ?? [] })
+      const arrangement = readJson(path.join(LOGS, 'map-layout.json'), null)
+      return send(res, 200, { ...(await workspace.map()), marks, active: meta().active ?? [], arrangement })
+    }
+    // Your own arrangement of the map: component positions, kept with the journal.
+    if (req.method === 'POST' && url.pathname === '/api/arrangement') {
+      const { positions } = await readBody(req)
+      const clean = {}
+      for (const [id, pos] of Object.entries(positions ?? {})) {
+        if (isId(id) && Number.isFinite(pos?.x) && Number.isFinite(pos?.y)) clean[id] = { x: Math.round(pos.x), y: Math.round(pos.y) }
+      }
+      fs.writeFileSync(path.join(LOGS, 'map-layout.json'), `${JSON.stringify({ positions: clean, updatedAt: Date.now() }, null, 2)}\n`)
+      return send(res, 200, { ok: true })
     }
     if (req.method === 'GET' && url.pathname === '/api/symbols') return send(res, 200, workspace.symbols(url.searchParams.get('path') ?? ''))
     if (req.method === 'POST' && url.pathname === '/api/ask') {

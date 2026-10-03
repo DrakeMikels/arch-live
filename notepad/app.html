@@ -164,6 +164,10 @@
   .diagram { flex: 1; overflow: auto; padding: 16px; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
   .maptools { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
   .maptools .spacer { flex: 1; }
+  .maptools select { border: 1px solid var(--rule); border-radius: 7px; background: var(--nodeFill); padding: 4px 8px; }
+  #mapLock.unlocked { border-color: var(--accent); color: var(--accent); }
+  #map.unlocked .m-node { cursor: move; }
+  #map.dragging, #map.dragging * { cursor: grabbing !important; }
   .exportwrap { position: relative; }
   .menu { position: absolute; right: 0; top: calc(100% + 4px); z-index: 20; min-width: 220px; background: var(--nodeFill); border: 1px solid var(--rule); border-radius: 9px; padding: 4px; box-shadow: 0 10px 30px rgba(0,0,0,.14); }
   .menu button { display: flex; justify-content: space-between; width: 100%; border: 0; background: none; text-align: left; padding: 6px 10px; border-radius: 6px; cursor: pointer; }
@@ -368,6 +372,13 @@
           <button class="btn" id="mapExpand">Expand all</button>
           <button class="btn" id="mapCollapse">Collapse all</button>
           <button class="btn" id="mapFit">Fit</button>
+          <select id="mapMode" aria-label="Layout" title="How the map is laid out">
+            <option value="lr">Left → right</option>
+            <option value="td">Top ↓ down</option>
+            <option value="compact">Compact</option>
+            <option value="custom">Custom (your arrangement)</option>
+          </select>
+          <button class="btn" id="mapLock" title="Unlock to drag components into your own arrangement"></button>
           <span class="exportwrap"><button class="btn" id="mapExport" aria-haspopup="menu">Export ▾</button>
             <div class="menu" id="exportMenu" role="menu" hidden>
               <button data-export="png" role="menuitem">PNG image <span class="hint">2×</span></button>
@@ -832,6 +843,11 @@ let mapAnim = 0
 let mapTicket = 0
 let mapDragged = false
 const mapView = { x: 0, y: 0, z: 1, isFitted: false }
+// Which layout draws the map, and whether components can be dragged (per browser).
+const mapPrefs = (() => {
+  try { return { mode: 'lr', isLocked: true, ...JSON.parse(localStorage.getItem(`arch-live-mapprefs:${token}`) || '{}') } } catch { return { mode: 'lr', isLocked: true } }
+})()
+const savePrefs = () => { try { localStorage.setItem(`arch-live-mapprefs:${token}`, JSON.stringify(mapPrefs)) } catch {} }
 const elk = typeof ELK === 'function' ? new ELK() : null
 const openSet = (() => { try { return new Set(JSON.parse(localStorage.getItem(`arch-live-open:${token}`) || '[]')) } catch { return new Set() } })()
 const saveOpen = () => { try { localStorage.setItem(`arch-live-open:${token}`, JSON.stringify([...openSet])) } catch {} }
@@ -926,6 +942,7 @@ const elkGraph = () => {
         'elk.layered.spacing.nodeNodeBetweenLayers': '46',
         'elk.spacing.nodeNode': '16',
         // At least as wide as its header, however few parts it holds.
+        'elk.direction': 'RIGHT',
         'elk.nodeSize.constraints': 'MINIMUM_SIZE',
         'elk.nodeSize.minimum': `(${M.NW + 120}, ${t.h + 30})`,
       }
@@ -938,9 +955,10 @@ const elkGraph = () => {
     id: 'root',
     layoutOptions: {
       'elk.algorithm': 'layered',
-      'elk.direction': 'RIGHT',
+      'elk.direction': mapPrefs.mode === 'td' ? 'DOWN' : 'RIGHT',
       'elk.hierarchyHandling': 'INCLUDE_CHILDREN',
-      'elk.partitioning.activate': 'true',
+      // Tiers as columns (or rows, top down); Compact lets connections alone decide.
+      'elk.partitioning.activate': mapPrefs.mode === 'compact' ? 'false' : 'true',
       'elk.edgeRouting': 'ORTHOGONAL',
       'elk.layered.spacing.nodeNodeBetweenLayers': String(M.GAP),
       'elk.spacing.nodeNode': String(M.RGY),
@@ -976,13 +994,16 @@ const fromElk = (res, graph) => {
     addEdges(c.edges, c.x, c.y)
   }
   addEdges(res.edges, 0, 0)
+  if (mapPrefs.mode === 'compact') return L
+  // Tier labels: above each column, or at the start of each row top down.
+  const isRows = mapPrefs.mode === 'td'
   const tiers = {}
   for (const n of mapData.nodes) {
     const r = L.nodes[n.id]
     const t = TIER[n.kind] ?? 2
-    if (r) tiers[t] = Math.min(tiers[t] ?? Infinity, r.x)
+    if (r) tiers[t] = Math.min(tiers[t] ?? Infinity, isRows ? r.y : r.x)
   }
-  L.tiers = Object.entries(tiers).map(([t, x]) => ({ label: TIER_LABEL[t], x })).sort((a, b) => a.x - b.x)
+  L.tiers = Object.entries(tiers).map(([t, at]) => ({ label: TIER_LABEL[t], x: isRows ? undefined : at, y: isRows ? at : undefined })).sort((a, b) => (a.x ?? a.y) - (b.x ?? b.y))
   return L
 }
 
@@ -1021,8 +1042,74 @@ const columnLayout = () => {
   return L
 }
 
+// An open component on its own, its parts laid out by ELK (or a grid).
+const innerLayout = async n => {
+  const t = nodeText(n, true)
+  const pv = partsFor(n)
+  const ids = new Set(pv.parts.map(p => p.id))
+  if (elk && pv.parts.length) {
+    try {
+      const res = await elk.layout({
+        id: 'inner',
+        layoutOptions: { 'elk.algorithm': 'layered', 'elk.direction': 'RIGHT', 'elk.padding': `[top=${t.head + 8},left=${M.PAD},bottom=${M.PAD},right=${M.PAD}]`, 'elk.layered.spacing.nodeNodeBetweenLayers': '46', 'elk.spacing.nodeNode': '16' },
+        children: pv.parts.map(p => ({ id: p.id, width: M.PW, height: partText(p).h })),
+        edges: pv.edges.filter(x => ids.has(x.from) && ids.has(x.to) && x.from !== x.to).map((x, i) => ({ id: `i${i}`, sources: [x.from], targets: [x.to] })),
+      })
+      return { w: Math.max(res.width, M.NW + 120), h: Math.max(res.height, t.h + 30), at: Object.fromEntries((res.children ?? []).map(c => [c.id, { x: c.x, y: c.y, w: c.width, h: c.height }])) }
+    } catch {}
+  }
+  const at = {}
+  let y = t.head + 8
+  for (const p of pv.parts) { const h = partText(p).h; at[p.id] = { x: M.PAD, y, w: M.PW, h }; y += h + 14 }
+  return { w: Math.max(M.NW + 120, M.PW + M.PAD * 2), h: Math.max(y + M.PAD, t.h + 30), at }
+}
+
+// Your arrangement: components where you dragged them (new ones where the
+// left-to-right layout would put them), each open one sized to its parts.
+const customLayout = async () => {
+  const saved = mapData.arrangement?.positions ?? {}
+  const missing = mapData.nodes.some(n => !saved[n.id])
+  const auto = missing ? await autoLayout('lr') : null
+  const L = { nodes: {}, parts: {}, tiers: [], edges: [], w: 0, h: 0, minX: 0, minY: 0, routed: false, isCustom: true }
+  for (const n of mapData.nodes) {
+    const at = saved[n.id] ?? auto?.nodes[n.id] ?? { x: 0, y: 0 }
+    if (openSet.has(n.id)) {
+      const inner = await innerLayout(n)
+      L.nodes[n.id] = { x: at.x, y: at.y, w: inner.w, h: inner.h, a: 1 }
+      for (const [pid, r] of Object.entries(inner.at)) L.parts[`${n.id}/${pid}`] = { x: at.x + r.x, y: at.y + r.y, w: r.w, h: r.h, a: 1 }
+    } else {
+      L.nodes[n.id] = { x: at.x, y: at.y, w: M.NW, h: nodeText(n, false).h, a: 1 }
+    }
+  }
+  const rs = Object.values(L.nodes)
+  L.minX = Math.min(...rs.map(r => r.x)) - 20
+  L.minY = Math.min(...rs.map(r => r.y)) - 40
+  L.w = Math.max(...rs.map(r => r.x + r.w)) + 20 - L.minX
+  L.h = Math.max(...rs.map(r => r.y + r.h)) + 20 - L.minY
+  return L
+}
+
+const autoLayout = async mode => {
+  const was = mapPrefs.mode
+  if (mode) mapPrefs.mode = mode
+  try {
+    if (elk) {
+      try {
+        const graph = elkGraph()
+        return fromElk(await elk.layout(graph), graph)
+      } catch (err) {
+        console.warn('arch-live: ELK layout failed, using columns', err)
+      }
+    }
+    return columnLayout()
+  } finally {
+    mapPrefs.mode = was
+  }
+}
+
 const computeLayout = async () => {
   if (!mapData?.nodes?.length) return { nodes: {}, parts: {}, tiers: [], edges: [], w: 0, h: 0, routed: false }
+  if (mapPrefs.mode === 'custom') return customLayout()
   if (elk) {
     try {
       const graph = elkGraph()
@@ -1101,7 +1188,8 @@ const mapMarkup = (L, isExport = false) => {
   const out = []
   out.push(`<defs>${['muted', 'link', 'soft'].map(c => `<marker id="m-${c}" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L8,4 L0,8 z" style="fill:var(--${c})"/></marker>`).join('')}</defs>`)
   const top = Math.min(...Object.values(L.nodes).map(r => r.y), 40)
-  for (const t of L.tiers) out.push(`<text x="${t.x}" y="${top - 16}" class="m-tier">${t.label}</text>`)
+  const left = Math.min(...Object.values(L.nodes).map(r => r.x), 20)
+  for (const t of L.tiers) out.push(t.y !== undefined ? `<text x="${left}" y="${t.y - 10}" class="m-tier">${t.label}</text>` : `<text x="${t.x}" y="${top - 16}" class="m-tier">${t.label}</text>`)
   const edgeClass = s => (s === 'http' ? 'http' : s === 'async' ? 'async' : s === 'thin' ? 'thin' : '')
   const marker = s => (s === 'http' ? 'link' : s === 'thin' ? 'soft' : 'muted')
   const edgeOut = []
@@ -1111,6 +1199,17 @@ const mapMarkup = (L, isExport = false) => {
       edgeOut.push(`<g opacity="${(e.a ?? 1).toFixed(3)}"><path d="${roundRoute(e.pts)}" class="m-edge ${edgeClass(e.style)}" marker-end="url(#m-${marker(e.style)})"/>${e.labels.map(l => `<text x="${l.x}" y="${l.y}" text-anchor="middle" class="m-elabel">${esc(cutText(l.text.toUpperCase(), 24))}</text>`).join('')}</g>`)
     }
   } else {
+    // Unrouted (your arrangement, or no ELK): curves, the parts' own links included.
+    for (const n of mapData.nodes) {
+      if (!openSet.has(n.id)) continue
+      const ids = new Set(partsFor(n).parts.map(p => p.id))
+      for (const x of partsFor(n).edges) {
+        const a = L.parts[`${n.id}/${x.from}`]; const b = L.parts[`${n.id}/${x.to}`]
+        if (!ids.has(x.from) || !ids.has(x.to) || !a || !b || Math.min(a.a, b.a) < 0.5) continue
+        const pth = linkPath(a, b)
+        edgeOut.push(`<path d="${pth.d}" class="m-edge" marker-end="url(#m-muted)"/>${x.label ? `<text x="${pth.mx}" y="${pth.my - 5}" text-anchor="middle" class="m-elabel">${esc(cutText(x.label.toUpperCase(), 22))}</text>` : ''}`)
+      }
+    }
     for (const x of linkEnds()) {
       const ra = L.nodes[x.from] ?? L.parts[x.from]; const rb = L.nodes[x.to] ?? L.parts[x.to]
       if (!ra || !rb || Math.min(ra.a, rb.a) < 0.5) continue
@@ -1202,8 +1301,8 @@ const fitMap = async () => {
   const r = $('#map').getBoundingClientRect()
   if (!L.w || !r.width) return
   mapView.z = Math.min(1.4, Math.max(0.25, Math.min((r.width - 40) / L.w, (r.height - 40) / L.h)))
-  mapView.x = (r.width - L.w * mapView.z) / 2
-  mapView.y = (r.height - L.h * mapView.z) / 2
+  mapView.x = (r.width - L.w * mapView.z) / 2 - (L.minX ?? 0) * mapView.z
+  mapView.y = (r.height - L.h * mapView.z) / 2 - (L.minY ?? 0) * mapView.z
   mapLayout = L
   drawMap(L)
 }
@@ -1246,14 +1345,16 @@ const mapStyles = () => {
 }
 const mapSvg = async () => {
   const L = await computeLayout()
-  const top = Math.min(...Object.values(L.nodes).map(r => r.y), 40) - 34
+  const rs = Object.values(L.nodes)
+  const top = Math.min(...rs.map(r => r.y), 40) - 34
+  const x0 = Math.min(0, ...rs.map(r => r.x)) - 4
   const pad = 24
-  const w = Math.ceil(L.w + pad * 2)
-  const h = Math.ceil(L.h - top + pad * 2)
+  const w = Math.ceil(Math.max(...rs.map(r => r.x + r.w)) - x0 + pad * 2)
+  const h = Math.ceil(Math.max(...rs.map(r => r.y + r.h)) - top + pad * 2)
   const title = mapData?.title || data?.meta?.title || 'Architecture'
   return {
     w, h,
-    svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${-pad} ${top - pad} ${w} ${h}" width="${w}" height="${h}" font-family="${esc(cssVar('font') || 'monospace')}"><title>${esc(title)} · architecture</title><style>${mapStyles()}</style><rect x="${-pad}" y="${top - pad}" width="${w}" height="${h}" style="fill:${cssVar('paper')}"/>${mapMarkup(L, true)}</svg>`,
+    svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${x0 - pad} ${top - pad} ${w} ${h}" width="${w}" height="${h}" font-family="${esc(cssVar('font') || 'monospace')}"><title>${esc(title)} · architecture</title><style>${mapStyles()}</style><rect x="${x0 - pad}" y="${top - pad}" width="${w}" height="${h}" style="fill:${cssVar('paper')}"/>${mapMarkup(L, true)}</svg>`,
   }
 }
 const mapPng = async () => {
@@ -1275,7 +1376,7 @@ const mermaidText = t => String(t ?? '').replace(/"/g, '#quot;').replace(/[<>]/g
 const SHAPE = { client: ['([', '])'], edge: ['{{', '}}'], service: ['[', ']'], worker: ['[', ']'], queue: ['[/', '/]'], store: ['[(', ')]'], external: ['[[', ']]'] }
 const mapMermaid = () => {
   const title = mapData?.title || data?.meta?.title || 'Architecture'
-  const lines = [`%% ${title} · architecture, from arch-live (${new Date().toLocaleDateString()})`, 'flowchart LR']
+  const lines = [`%% ${title} · architecture, from arch-live (${new Date().toLocaleDateString()})`, `flowchart ${mapPrefs.mode === 'td' ? 'TD' : 'LR'}`]
   const tiers = TIER_LABEL.map(() => [])
   for (const n of [...mapData.nodes].sort((a, b) => a.order - b.order)) tiers[TIER[n.kind] ?? 2].push(n)
   // Tiers as comments: Mermaid lays out left to right best without tier groups.
@@ -1378,8 +1479,53 @@ $('#map').addEventListener('dblclick', e => {
   if (p?.path) openCode(p.path, p.line)
 })
 // Drag the background to pan; scroll to pan, pinch or ⌘-scroll to zoom.
+// Unlocked, a component can be dragged; the first drag starts your own
+// arrangement from the layout on screen. A press without movement is a click.
+const startNodeDrag = (e, id) => {
+  const map = $('#map')
+  const sx = e.clientX; const sy = e.clientY
+  const b0 = { ...mapLayout.nodes[id] }
+  const parts0 = Object.entries(mapLayout.parts).filter(([k]) => k.startsWith(`${id}/`)).map(([k, r]) => [k, { ...r }])
+  let isMoving = false
+  map.setPointerCapture(e.pointerId)
+  const move = ev => {
+    const dx = (ev.clientX - sx) / mapView.z; const dy = (ev.clientY - sy) / mapView.z
+    if (!isMoving && Math.hypot(dx, dy) * mapView.z < 4) return
+    if (!isMoving) {
+      isMoving = true
+      mapDragged = true
+      map.classList.add('dragging')
+      if (mapPrefs.mode !== 'custom') {
+        // Start from what is on screen, every component where it stands.
+        mapData.arrangement = { positions: Object.fromEntries(Object.entries(mapLayout.nodes).map(([k, r]) => [k, { x: r.x, y: r.y }])) }
+        mapPrefs.mode = 'custom'; savePrefs(); syncMapTools()
+      }
+      mapLayout = { ...mapLayout, routed: false, edges: [], tiers: [], isCustom: true }
+    }
+    const snap = v => Math.round(v / 8) * 8
+    mapLayout.nodes[id] = { ...b0, x: snap(b0.x + dx), y: snap(b0.y + dy) }
+    const ox = mapLayout.nodes[id].x - b0.x; const oy = mapLayout.nodes[id].y - b0.y
+    for (const [k, r] of parts0) mapLayout.parts[k] = { ...r, x: r.x + ox, y: r.y + oy }
+    drawMap(mapLayout)
+  }
+  const up = () => {
+    map.classList.remove('dragging')
+    map.removeEventListener('pointermove', move); map.removeEventListener('pointerup', up)
+    if (isMoving) {
+      const positions = { ...(mapData.arrangement?.positions ?? {}), [id]: { x: mapLayout.nodes[id].x, y: mapLayout.nodes[id].y } }
+      mapData.arrangement = { positions }
+      api('/api/arrangement', { positions })
+    }
+    setTimeout(() => { mapDragged = false }, 0)
+  }
+  map.addEventListener('pointermove', move); map.addEventListener('pointerup', up)
+}
+
 $('#map').addEventListener('pointerdown', e => {
-  if (e.button !== 0 || e.target.closest('[data-mnode], [data-mpart]')) return
+  if (e.button !== 0) return
+  const dragNode = !mapPrefs.isLocked && !e.target.closest('[data-mpart], [data-bd], [data-markof]') && e.target.closest('[data-mnode]')
+  if (dragNode && mapLayout?.nodes[dragNode.dataset.mnode]) return startNodeDrag(e, dragNode.dataset.mnode)
+  if (e.target.closest('[data-mnode], [data-mpart]')) return
   const sx = e.clientX; const sy = e.clientY; const vx = mapView.x; const vy = mapView.y
   const map = $('#map')
   map.setPointerCapture(e.pointerId)
@@ -1403,6 +1549,24 @@ $('#map').addEventListener('wheel', e => {
   if (e.ctrlKey || e.metaKey) zoomMap(Math.exp(-e.deltaY * 0.01), e.clientX - r.left, e.clientY - r.top)
   else { mapView.x -= e.deltaX; mapView.y -= e.deltaY; drawMap(mapLayout) }
 }, { passive: false })
+const syncMapTools = () => {
+  $('#mapMode').value = mapPrefs.mode
+  $('#mapLock').textContent = mapPrefs.isLocked ? '🔒 Locked' : '🔓 Drag to arrange'
+  $('#mapLock').classList.toggle('unlocked', !mapPrefs.isLocked)
+  $('#map').classList.toggle('unlocked', !mapPrefs.isLocked)
+}
+$('#mapMode').addEventListener('change', async e => {
+  mapPrefs.mode = e.target.value
+  savePrefs(); syncMapTools()
+  await animateMap(null, 520)
+  setTimeout(fitMap, 560)
+})
+$('#mapLock').addEventListener('click', () => {
+  mapPrefs.isLocked = !mapPrefs.isLocked
+  savePrefs(); syncMapTools()
+  toast(mapPrefs.isLocked ? 'Locked: components stay where they are' : 'Unlocked: drag a component to arrange the map your way')
+})
+syncMapTools()
 $('#mapExpand').addEventListener('click', () => setAllOpen(true))
 $('#mapCollapse').addEventListener('click', () => setAllOpen(false))
 $('#mapFit').addEventListener('click', fitMap)
