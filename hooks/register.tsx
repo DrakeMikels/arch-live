@@ -362,16 +362,21 @@ const writePopout = async ($: EngineInterface, graph: ArchGraph | null, theme: A
 // The browser notepad: a small local server shipped with the mod, started once
 // per session and stopped with it. Without Node it falls back to a static page.
 let notepadStarting: Promise<string | undefined> | undefined
+// Why the last start failed, so the fallback says what actually went wrong.
+let notepadError: string | undefined
 
 const startNotepad = async ($: EngineInterface): Promise<string | undefined> => {
   await publishLive($).catch(() => undefined)
   const argv = [`${$.plugin.root}/notepad/server.mjs`, '--logs', await logsDir($), '--project', await projectPath($)]
+  const reasons: string[] = []
   for (const node of ['node', '/opt/homebrew/bin/node', '/usr/local/bin/node']) {
     const url = await new Promise<string | undefined>(resolve => {
       void (async () => {
         let isResolved = false
+        let stderr = ''
         try {
           for await (const chunk of $.process.spawn({ argv: [node, ...argv] })) {
+            if (chunk.stream === 'stderr' && !isResolved) stderr += chunk.text
             const found = /NOTEPAD (http:\/\/127\.0\.0\.1:\d+\/\?t=[a-f0-9]+)/.exec(chunk.text)
             if (found && !isResolved) {
               isResolved = true
@@ -387,15 +392,22 @@ const startNotepad = async ($: EngineInterface): Promise<string | undefined> => 
         } catch {
           // This node could not start; the next is tried.
         }
-        if (!isResolved) resolve(undefined)
+        if (!isResolved) {
+          // Node ran but the server failed: keep its first error line.
+          const line = stderr.split('\n').map(l => l.trim()).find(l => /error|denied|not permitted|cannot/i.test(l))
+          if (line) reasons.push(line.slice(0, 160))
+          resolve(undefined)
+        }
         else await update($, notepadAtom, () => null)
       })()
     })
     if (url) {
+      notepadError = undefined
       await update($, notepadAtom, () => url)
       return url
     }
   }
+  notepadError = reasons[0] ?? 'Node was not found'
   return undefined
 }
 
@@ -441,7 +453,7 @@ const openPopout = async ($: EngineInterface) => {
     const file = `${await $.session.cwd()}/${inRoot(await currentRoot($), POPOUT_FILE)}`
     const ran = await $.process.run(['open', file])
     if (ran.exitCode !== 0) $.ui.toast(`arch-live: could not open the browser view (${ran.stderr.trim() || ran.exitCode})`)
-    else $.ui.toast('arch-live: Node was not found, so the browser view is read-only')
+    else $.ui.toast(`arch-live: the notepad server did not start (${notepadError ?? 'Node was not found'}), so the browser view is read-only`)
   } catch (err) {
     $.ui.toast(`arch-live: ${errorText(err)}`)
   }
@@ -764,7 +776,7 @@ const runCommand = async ($: EngineInterface, command: string, args: string): Pr
     case 'notepad': {
       await openPopout($)
       const url = (await $.state.get({ plugin: 'arch-live', key: 'notepad' })).value
-      return url ? 'Notepad opened in your browser.' : 'Opened the read-only browser view (Node was not found).'
+      return url ? 'Notepad opened in your browser.' : `Opened the read-only browser view: the notepad server did not start (${notepadError ?? 'Node was not found'}).`
     }
     case 'done': {
       if (!args.trim()) return 'Usage: /done <words from the todo or blocker>'
