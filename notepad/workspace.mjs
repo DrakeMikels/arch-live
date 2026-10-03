@@ -219,5 +219,49 @@ export const createWorkspace = ({ project, logs, graph, recent }) => {
     }
   }
 
-  return { component, symbols, boardsDir, boardFile, listBoards }
+  // A quick look at a component before Claude breaks it down: its top-level
+  // folders and files, largest first, with what their files do.
+  const quickParts = found => {
+    const groups = new Map()
+    const owns = [...found.owns].sort((a, b) => b.length - a.length)
+    for (const f of found.files) {
+      const base = owns.find(o => f.path === o || f.path.startsWith(`${o}/`)) ?? ''
+      const rest = base && f.path !== base ? f.path.slice(base.length + 1) : f.path.slice(base.length)
+      const isDir = rest.includes('/')
+      const key = !rest ? base : isDir ? `${base ? `${base}/` : ''}${rest.split('/')[0]}` : f.path
+      if (!groups.has(key)) groups.set(key, { files: [], isDir })
+      groups.get(key).files.push(f)
+    }
+    return [...groups.entries()]
+      .sort((a, b) => b[1].files.length - a[1].files.length)
+      .slice(0, 10)
+      .map(([key, g]) => {
+        const described = g.files.find(f => f.summary)
+        return {
+          id: `q:${key}`,
+          label: `${key.split('/').pop()}${g.isDir ? '/' : ''}`,
+          path: g.isDir ? g.files[0].path : key,
+          summary: g.files.length === 1 ? (described?.summary ?? '') : `${g.files.length} files${described ? ` · ${described.summary}` : ''}`,
+        }
+      })
+  }
+
+  // The whole map for the notepad's canvas: every component with its parts.
+  const map = async () => {
+    const g = graph()
+    if (!g) return { nodes: [], edges: [] }
+    const nodes = await Promise.all(
+      g.nodes.map(async n => {
+        const found = n.breakdown?.parts?.length ? null : await component(n.id)
+        return {
+          id: n.id, label: n.label, kind: n.kind, sublabel: n.sublabel ?? '', path: n.path ?? null, line: n.line ?? null, order: n.order ?? 0,
+          breakdown: n.breakdown ?? null,
+          quick: found ? quickParts(found) : [],
+        }
+      }),
+    )
+    return { title: g.title ?? '', nodes, edges: g.edges ?? [], focus: g.focus ?? [] }
+  }
+
+  return { component, symbols, boardsDir, boardFile, listBoards, map }
 }

@@ -811,6 +811,9 @@ const publishLive = async ($: EngineInterface) => {
     title: graph?.title ?? (await projectPath($)).split('/').pop() ?? 'Project',
     nodes: (graph?.nodes ?? []).map(n => ({ id: n.id, label: n.label, kind: n.kind, path: n.path ?? null, line: n.line ?? null })),
     theme: { light: theme.light, dark: theme.dark, fonts: theme.fonts, mode: theme.mode },
+    // For the notepad's map: today's marks and the components Claude is in now.
+    marks: overlay.marks ?? {},
+    active,
     updatedAt: now,
   }
   await $.fs.write(`${dir}/meta.json`, `${JSON.stringify(meta, null, 2)}\n`)

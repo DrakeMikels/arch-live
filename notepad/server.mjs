@@ -471,6 +471,10 @@ const server = http.createServer(async (req, res) => {
       const found = await workspace.component(url.searchParams.get('id'))
       return found ? send(res, 200, found) : send(res, 404, { error: 'no such component' })
     }
+    if (req.method === 'GET' && url.pathname === '/api/graph') {
+      const m = meta()
+      return send(res, 200, { ...(await workspace.map()), marks: m.marks ?? {}, active: m.active ?? [] })
+    }
     if (req.method === 'GET' && url.pathname === '/api/symbols') return send(res, 200, workspace.symbols(url.searchParams.get('path') ?? ''))
     if (req.method === 'POST' && url.pathname === '/api/ask') {
       const body = await readBody(req)

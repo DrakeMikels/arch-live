@@ -143,7 +143,39 @@
 
   /* Diagram + drawer */
   .diagram { flex: 1; overflow: auto; padding: 16px; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
-  .diagram .svg { flex: 1; display: flex; align-items: flex-start; justify-content: center; }
+  .maptools { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .maptools .spacer { flex: 1; }
+  .zoomctl { display: inline-flex; align-items: center; gap: 2px; border: 1px solid var(--rule); border-radius: 7px; padding: 1px 4px; }
+  .zoomctl button { border: 0; background: none; cursor: pointer; padding: 1px 6px; color: var(--muted); }
+  .mapwrap { flex: 1; min-height: 0; position: relative; border: 1px solid var(--rule); border-radius: 10px; overflow: hidden; background-color: var(--paper); background-image: radial-gradient(var(--rule) 1px, transparent 1px); background-size: 22px 22px; }
+  #map { position: absolute; inset: 0; width: 100%; height: 100%; cursor: grab; user-select: none; font-family: var(--font); }
+  #map.panning { cursor: grabbing; }
+  #map .m-node, #map .m-part { cursor: pointer; }
+  #map .m-tier { fill: var(--soft); font-size: 10px; letter-spacing: .16em; }
+  #map .m-box { fill: var(--nodeFill); stroke: var(--rule); stroke-width: 1; }
+  #map .m-node.open .m-box { fill: var(--paper2); stroke: var(--muted); }
+  #map .m-box.focus { stroke: var(--accent); fill: var(--accentTint); }
+  #map .m-node.open .m-box.focus { fill: var(--paper2); }
+  #map .m-box.sel { stroke: var(--accent); stroke-width: 2; }
+  #map .m-node:hover .m-box { stroke: var(--accent); }
+  #map .m-kind { fill: var(--soft); font-size: 9px; letter-spacing: .14em; }
+  #map .m-kind.focus { fill: var(--accent); }
+  #map .m-label { fill: var(--ink); font-size: 14px; font-weight: 600; }
+  #map .m-sub { fill: var(--muted); font-size: 10.5px; }
+  #map .m-cta { fill: var(--accent); cursor: pointer; }
+  #map .m-chev { fill: var(--soft); font-size: 12px; }
+  #map .m-active { fill: var(--accent); }
+  #map .m-mark { fill: var(--accent); font-size: 11px; font-style: italic; }
+  #map .m-edge { fill: none; stroke-width: 1.3; }
+  #map .m-edge.thin { stroke: var(--soft); stroke-width: 1; stroke-dasharray: 3 3; }
+  #map .m-elabel { fill: var(--soft); font-size: 9px; letter-spacing: .08em; paint-order: stroke; stroke: var(--paper); stroke-width: 4px; }
+  #map .m-pbox { fill: var(--nodeFill); stroke: var(--rule); }
+  #map .m-part:hover .m-pbox, #map .m-pbox.sel { stroke: var(--accent); stroke-width: 1.6; }
+  #map .m-plabel { fill: var(--ink); font-size: 12.5px; font-weight: 600; }
+  #map .m-pin { fill: var(--nodeFill); stroke: var(--accent); stroke-width: 1.3; }
+  #map .m-pin.done { fill: var(--accent); }
+  #map .m-pinnum { fill: var(--accent); font-size: 10px; font-weight: 600; }
+  #map .m-pinnum.done { fill: var(--nodeFill); }
   .diagram .svg.focused { flex-direction: column; align-items: stretch; justify-content: flex-start; }
   .crumbs { display: flex; gap: 8px; align-items: baseline; margin: 2px 0 12px; }
   .crumbs button { border: 0; background: none; color: var(--accent); cursor: pointer; padding: 0; font: inherit; }
@@ -296,8 +328,15 @@
 
     <section class="view" data-view="diagram">
       <div class="diagram">
-        <div class="hint">Click a component to open it: its parts, files and functions · <kbd>⌥</kbd>-click to mark it</div>
-        <div class="svg" id="svg"></div>
+        <div class="maptools">
+          <span class="hint">Click a component to open it in place · click a numbered part for its purpose · double-click a part for its code · <kbd>⌥</kbd>-click to mark</span>
+          <span class="spacer"></span>
+          <button class="btn" id="mapExpand">Expand all</button>
+          <button class="btn" id="mapCollapse">Collapse all</button>
+          <button class="btn" id="mapFit">Fit</button>
+          <span class="zoomctl"><button id="mapOut" title="Zoom out">−</button><span id="mapZoom" class="hint">100%</span><button id="mapIn" title="Zoom in">+</button></span>
+        </div>
+        <div class="mapwrap"><svg id="map" xmlns="http://www.w3.org/2000/svg"><g id="mapvp"></g></svg></div>
       </div>
       <div class="gutter" data-pane="drawer"><button data-collapse="drawer" title="Close (Esc)">›</button></div>
       <aside class="drawer" id="drawer"></aside>
@@ -713,49 +752,30 @@ $('#writeStandup').addEventListener('click', async () => {
 
 let drawer = null // { id, data, filter, expanded: Set, details: Map }
 
-const renderDiagram = async () => {
-  if (drawer) return renderFocus()
-  const svg = await fetch(`/live.svg?t=${token}`).then(r => r.text())
-  $('#svg').classList.remove('focused')
-  $('#svg').innerHTML = svg
-}
+/* ---------- The map: one canvas, components open in place ---------- */
 
-/* ---------- Zoomed into one component ---------- */
+// The Diagram tab draws the map itself (the pane keeps the static drawing):
+// click a component and it opens where it sits, its parts inside and its
+// neighbours sliding aside; links move to the part that makes the call.
+let mapData = null
+let mapLayout = null
+let mapAnim = 0
+let mapDragged = false
+const mapView = { x: 0, y: 0, z: 1, isFitted: false }
+const openSet = (() => { try { return new Set(JSON.parse(localStorage.getItem(`arch-live-open:${token}`) || '[]')) } catch { return new Set() } })()
+const saveOpen = () => { try { localStorage.setItem(`arch-live-open:${token}`, JSON.stringify([...openSet])) } catch {} }
+const TIER = { client: 0, edge: 1, service: 2, worker: 2, queue: 3, store: 4, external: 5 }
+const TIER_LABEL = ['CLIENTS', 'EDGE', 'SERVICES', 'MESSAGING', 'DATA', 'EXTERNAL']
+const M = { NW: 220, NH: 64, PW: 200, PH: 58, PGX: 40, PGY: 14, PAD: 16, TOP: 60, CGX: 120, RGY: 26, LABEL: 34 }
 
-// A component's parts: Claude's breakdown, else a quick look built from the
-// folders and files it owns.
-const partsOf = d => {
-  if (d.breakdown?.parts?.length) return { parts: d.breakdown.parts, edges: d.breakdown.edges ?? [], isQuick: false }
-  const groups = new Map()
-  for (const f of d.files) {
-    const base = [...d.owns].sort((a, b) => b.length - a.length).find(o => f.path === o || f.path.startsWith(`${o}/`)) ?? ''
-    const rest = base && f.path !== base ? f.path.slice(base.length + 1) : f.path.slice(base.length)
-    const seg = rest.split('/')[0]
-    const key = !rest ? base : rest.includes('/') ? `${base ? `${base}/` : ''}${seg}` : f.path
-    if (!groups.has(key)) groups.set(key, { files: [], isDir: rest.includes('/') })
-    groups.get(key).files.push(f)
-  }
-  const parts = [...groups.entries()]
-    .sort((a, b) => b[1].files.length - a[1].files.length)
-    .slice(0, 10)
-    .map(([key, g]) => {
-      const described = g.files.find(f => f.summary)
-      return {
-        id: `q:${key}`,
-        label: `${key.split('/').pop()}${g.isDir ? '/' : ''}`,
-        path: g.isDir ? g.files[0].path : key,
-        summary: g.files.length === 1 ? (described?.summary ?? '') : `${g.files.length} files${described ? ` · ${described.summary}` : ''}`,
-      }
-    })
-  return { parts, edges: [], isQuick: true }
-}
+const partsFor = n => (n?.breakdown?.parts?.length
+  ? { parts: n.breakdown.parts, edges: n.breakdown.edges ?? [], isQuick: false }
+  : { parts: n?.quick ?? [], edges: [], isQuick: true })
 
-// Columns follow the connections (a part sits right of what calls it); with
-// none, a grid. The component is the group box; its neighbours are stubs at
-// the left (callers) and right (callees).
-const renderFocus = () => {
-  const d = drawer.data
-  const { parts, edges, isQuick } = partsOf(d)
+// Parts inside an open component: columns follow their connections, else a grid.
+const innerLayout = n => {
+  const { parts, edges } = partsFor(n)
+  if (!parts.length) return { w: M.NW, h: M.TOP + 34, at: {} }
   const ids = new Set(parts.map(p => p.id))
   const inner = edges.filter(e => ids.has(e.from) && ids.has(e.to) && e.from !== e.to)
   const level = Object.fromEntries(parts.map(p => [p.id, 0]))
@@ -766,88 +786,315 @@ const renderFocus = () => {
     for (const p of parts) (cols[level[p.id]] ??= []).push(p)
     cols = cols.filter(Boolean)
   } else {
-    const per = Math.max(1, Math.ceil(parts.length / 3))
-    cols = Array.from({ length: Math.min(3, parts.length) }, (_, i) => parts.slice(i * per, (i + 1) * per)).filter(c => c.length)
+    const nc = parts.length <= 2 ? parts.length : parts.length <= 8 ? 2 : 3
+    const per = Math.ceil(parts.length / nc)
+    cols = Array.from({ length: nc }, (_, i) => parts.slice(i * per, (i + 1) * per)).filter(c => c.length)
   }
-  const W = 220, H = 66, GX = 70, GY = 20, PAD = 28, TOP = 58, SW = 160, SH = 46, SGAP = 70
-  const rows = Math.max(1, ...cols.map(c => c.length))
-  const gx = d.callers.length ? SW + SGAP : 0
-  const gw = PAD * 2 + Math.max(1, cols.length) * W + Math.max(0, cols.length - 1) * GX
-  const gh = TOP + PAD + rows * H + (rows - 1) * GY
-  const totalW = gx + gw + (d.callees.length ? SGAP + SW : 0)
-  const totalH = Math.max(gh, d.callers.length * (SH + 14), d.callees.length * (SH + 14)) + 20
-  const pos = {}
+  const rows = Math.max(...cols.map(c => c.length))
+  const bodyH = rows * M.PH + (rows - 1) * M.PGY
+  const at = {}
   cols.forEach((c, ci) => c.forEach((p, ri) => {
-    const colH = c.length * H + (c.length - 1) * GY
-    pos[p.id] = { x: gx + PAD + ci * (W + GX), y: TOP + (rows * H + (rows - 1) * GY - colH) / 2 + ri * (H + GY) }
+    const colH = c.length * M.PH + (c.length - 1) * M.PGY
+    at[p.id] = { x: M.PAD + ci * (M.PW + M.PGX), y: M.TOP + (bodyH - colH) / 2 + ri * (M.PH + M.PGY) }
   }))
-  const cut = (t, n) => (String(t ?? '').length > n ? `${String(t).slice(0, n - 1)}…` : String(t ?? ''))
-  const out = []
-  out.push(`<defs><marker id="fa" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L8,4 L0,8 z" style="fill:var(--muted)"/></marker></defs>`)
-  out.push(`<rect x="${gx}" y="0" width="${gw}" height="${gh}" rx="14" style="fill:var(--paper2);stroke:var(--accent);stroke-width:1.5"/>`)
-  out.push(`<text x="${gx + PAD}" y="26" style="fill:var(--accent);font-size:10px;letter-spacing:.16em">${esc(d.node.kind.toUpperCase())}</text>`)
-  out.push(`<text x="${gx + PAD}" y="44" style="fill:var(--ink);font-size:16px;font-weight:600">${esc(d.node.label)}</text>`)
-  const curve = (x1, y1, x2, y2) => `M ${x1} ${y1} C ${x1 + 40} ${y1}, ${x2 - 40} ${y2}, ${x2} ${y2}`
-  for (const e of inner) {
-    const a = pos[e.from], b = pos[e.to]
-    const fwd = b.x > a.x
-    const path = fwd ? curve(a.x + W, a.y + H / 2, b.x, b.y + H / 2) : `M ${a.x + W / 2} ${a.y + H} C ${a.x + W / 2} ${a.y + H + 40}, ${b.x + W / 2} ${b.y + H + 40}, ${b.x + W / 2} ${b.y + H}`
-    out.push(`<path d="${path}" style="fill:none;stroke:var(--muted);stroke-width:1.2" marker-end="url(#fa)"/>`)
-    if (e.label) out.push(`<text x="${(a.x + W + b.x) / 2}" y="${(a.y + b.y + H) / 2 - 4}" text-anchor="middle" style="fill:var(--soft);font-size:9px;letter-spacing:.08em">${esc(cut(e.label.toUpperCase(), 18))}</text>`)
-  }
-  const stubs = (list, x, side) => list.forEach((s, i) => {
-    const y = (totalH - 20 - list.length * (SH + 14)) / 2 + i * (SH + 14)
-    out.push(`<g class="stub" data-stub="${esc(s.id)}"><rect x="${x}" y="${y}" width="${SW}" height="${SH}" rx="8" style="fill:var(--nodeFill);stroke:var(--rule)"/><text x="${x + 12}" y="${y + 18}" style="fill:var(--soft);font-size:9px;letter-spacing:.14em">${esc(String(s.kind).toUpperCase())}</text><text x="${x + 12}" y="${y + 34}" style="fill:var(--muted);font-size:12px">${esc(cut(s.label, 20))}</text></g>`)
-    // Wired to the part named in the breakdown, else to the group's edge.
-    const hit = edges.find(e => (side === 'in' ? e.from === s.id && ids.has(e.to) : e.to === s.id && ids.has(e.from)))
-    const p = hit ? pos[side === 'in' ? hit.to : hit.from] : null
-    const path = side === 'in'
-      ? curve(x + SW, y + SH / 2, p ? p.x : gx, p ? p.y + H / 2 : gh / 2)
-      : curve(p ? p.x + W : gx + gw, p ? p.y + H / 2 : gh / 2, x, y + SH / 2)
-    out.push(`<path d="${path}" style="fill:none;stroke:var(--rule);stroke-width:1.2;stroke-dasharray:4 3" marker-end="url(#fa)"/>`)
-    if (s.edge) out.push(`<text x="${side === 'in' ? x + SW + 8 : x - 8}" y="${y + SH / 2 - 6}" text-anchor="${side === 'in' ? 'start' : 'end'}" style="fill:var(--soft);font-size:9px;letter-spacing:.08em">${esc(cut(s.edge.toUpperCase(), 16))}</text>`)
-  })
-  stubs(d.callers, 0, 'in')
-  stubs(d.callees, gx + gw + SGAP, 'out')
-  parts.forEach((p, i) => {
-    const { x, y } = pos[p.id]
-    const on = drawer.part === p.id
-    out.push(`<g class="part" data-part="${esc(p.id)}"><title>${esc(p.summary ?? p.label)}</title>
-      <rect class="box" x="${x}" y="${y}" width="${W}" height="${H}" rx="9" style="fill:var(--nodeFill);stroke:${on ? 'var(--accent)' : 'var(--rule)'};stroke-width:${on ? 2 : 1}"/>
-      <text x="${x + 30}" y="${y + 20}" style="fill:var(--soft);font-size:9px;letter-spacing:.14em">${esc((p.role ?? (isQuick ? 'files' : 'part')).toUpperCase())}</text>
-      <text x="${x + 30}" y="${y + 37}" style="fill:var(--ink);font-size:13px;font-weight:600">${esc(cut(p.label, 24))}</text>
-      <text x="${x + 30}" y="${y + 53}" style="fill:var(--muted);font-size:10.5px">${esc(cut(p.summary ?? '', 34))}</text>
-      <circle cx="${x + 15}" cy="${y + 17}" r="9" style="fill:${p.detail ? 'var(--accent)' : 'var(--nodeFill)'};stroke:var(--accent);stroke-width:1.3"/>
-      <text x="${x + 15}" y="${y + 20.5}" text-anchor="middle" style="fill:${p.detail ? 'var(--nodeFill)' : 'var(--accent)'};font-size:10px;font-weight:600">${i + 1}</text></g>`)
-  })
-  const note = isQuick
-    ? `quick look from its folders · <button data-crumb-breakdown>Break down with Claude</button> for real parts you can explain`
-    : `${parts.length} parts by Claude · updated ${esc(stamp(d.breakdown.at))} · click a numbered pin for its purpose`
-  $('#svg').classList.add('focused')
-  $('#svg').innerHTML = `<div class="crumbs"><button data-crumb>System</button><span>›</span><b>${esc(d.node.label)}</b><span class="hint">${note}</span></div>
-    <svg class="focus-svg" viewBox="-4 -4 ${totalW + 8} ${totalH + 8}" width="${totalW + 8}" style="font-family:var(--font)">${out.join('')}</svg>`
+  return { w: Math.max(M.NW, M.PAD * 2 + cols.length * M.PW + (cols.length - 1) * M.PGX), h: M.TOP + bodyH + M.PAD, at }
 }
 
-$('#svg').addEventListener('click', async e => {
-  if (e.target.closest('[data-crumb]')) return closeDrawer()
-  if (e.target.closest('[data-crumb-breakdown]')) {
-    const res = await api('/api/ask', { kind: 'breakdown', component: drawer.id })
-    return toast(res.ok ? 'Asked Claude to break this component down: the diagram fills in when it is done' : 'Could not reach the session')
+// Tiers as columns, as in the pane; open components sized to their parts.
+const layoutMap = () => {
+  const L = { nodes: {}, parts: {}, tiers: [], w: 0, h: 0 }
+  if (!mapData?.nodes?.length) return L
+  const cols = TIER_LABEL.map(() => [])
+  for (const n of [...mapData.nodes].sort((a, b) => a.order - b.order)) cols[TIER[n.kind] ?? 2].push(n)
+  const sizes = Object.fromEntries(mapData.nodes.map(n => [n.id, openSet.has(n.id) ? innerLayout(n) : { w: M.NW, h: M.NH, at: {} }]))
+  const used = cols
+    .map((c, i) => ({ i, c, w: Math.max(0, ...c.map(n => sizes[n.id].w)), h: c.reduce((s, n) => s + sizes[n.id].h, 0) + Math.max(0, c.length - 1) * M.RGY }))
+    .filter(x => x.c.length)
+  const maxH = Math.max(0, ...used.map(x => x.h))
+  let x = 0
+  for (const col of used) {
+    L.tiers.push({ label: TIER_LABEL[col.i], x })
+    let y = M.LABEL + (maxH - col.h) / 2
+    for (const n of col.c) {
+      const s = sizes[n.id]
+      const nx = x + (col.w - s.w) / 2
+      L.nodes[n.id] = { x: nx, y, w: s.w, h: s.h, a: 1 }
+      for (const [pid, r] of Object.entries(s.at)) L.parts[`${n.id}/${pid}`] = { x: nx + r.x, y: y + r.y, w: M.PW, h: M.PH, a: 1 }
+      y += s.h + M.RGY
+    }
+    x += col.w + M.CGX
   }
-  const stub = e.target.closest('[data-stub]')
-  if (stub) return openDrawer(stub.dataset.stub)
-  const part = e.target.closest('[data-part]')
-  if (part && drawer) {
-    drawer.part = drawer.part === part.dataset.part ? null : part.dataset.part
-    renderDrawer(); renderFocus()
+  L.w = Math.max(0, x - M.CGX)
+  L.h = maxH + M.LABEL
+  return L
+}
+
+const ease = t => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2)
+const mix = (a, b, t) => a + (b - a) * t
+// A frame between two layouts: boxes glide and resize; parts that appear
+// fade in once there is room, parts that go fade out first.
+const between = (A, B, t) => {
+  const k = ease(t)
+  const out = { nodes: {}, parts: {}, tiers: B.tiers, w: mix(A.w, B.w, k), h: mix(A.h, B.h, k) }
+  for (const id of new Set([...Object.keys(A.nodes), ...Object.keys(B.nodes)])) {
+    const a = A.nodes[id]; const b = B.nodes[id]
+    out.nodes[id] = a && b ? { x: mix(a.x, b.x, k), y: mix(a.y, b.y, k), w: mix(a.w, b.w, k), h: mix(a.h, b.h, k), a: 1 } : { ...(b ?? a), a: b ? k : 1 - k }
+  }
+  for (const id of new Set([...Object.keys(A.parts), ...Object.keys(B.parts)])) {
+    const a = A.parts[id]; const b = B.parts[id]
+    const nid = id.slice(0, id.indexOf('/'))
+    const node = out.nodes[nid]
+    if (a && b) out.parts[id] = { x: mix(a.x, b.x, k), y: mix(a.y, b.y, k), w: b.w, h: b.h, a: 1 }
+    else if (b) out.parts[id] = { x: node.x + (b.x - B.nodes[nid].x), y: node.y + (b.y - B.nodes[nid].y), w: b.w, h: b.h, a: Math.max(0, (t - 0.55) / 0.45) }
+    else out.parts[id] = { x: node.x + (a.x - A.nodes[nid].x), y: node.y + (a.y - A.nodes[nid].y), w: a.w, h: a.h, a: Math.max(0, 1 - t / 0.3) }
+  }
+  return out
+}
+
+const cutText = (t, n) => (String(t ?? '').length > n ? `${String(t).slice(0, n - 1)}…` : String(t ?? ''))
+// A curve between two boxes: side to side across columns, top to bottom within one.
+const linkPath = (ra, rb) => {
+  const cy = r => r.y + r.h / 2
+  if (ra.x + ra.w <= rb.x || rb.x + rb.w <= ra.x) {
+    const isRight = ra.x + ra.w <= rb.x
+    const x1 = isRight ? ra.x + ra.w : ra.x
+    const x2 = isRight ? rb.x : rb.x + rb.w
+    const dx = Math.max(30, Math.abs(x2 - x1) / 2) * (isRight ? 1 : -1)
+    return { d: `M ${x1} ${cy(ra)} C ${x1 + dx} ${cy(ra)}, ${x2 - dx} ${cy(rb)}, ${x2} ${cy(rb)}`, mx: (x1 + x2) / 2, my: (cy(ra) + cy(rb)) / 2 }
+  }
+  const isDown = rb.y > ra.y
+  const x1 = ra.x + ra.w / 2; const x2 = rb.x + rb.w / 2
+  const y1 = isDown ? ra.y + ra.h : ra.y; const y2 = isDown ? rb.y : rb.y + rb.h
+  const dy = (y2 - y1) / 2
+  return { d: `M ${x1} ${y1} C ${x1} ${y1 + dy}, ${x2} ${y2 - dy}, ${x2} ${y2}`, mx: (x1 + x2) / 2, my: (y1 + y2) / 2 }
+}
+
+const drawMap = L => {
+  if (!mapData) return
+  const out = []
+  const byId = Object.fromEntries(mapData.nodes.map(n => [n.id, n]))
+  const color = s => (s === 'http' ? 'var(--link)' : 'var(--muted)')
+  out.push(`<defs>${['muted', 'link'].map(c => `<marker id="m-${c}" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L8,4 L0,8 z" style="fill:var(--${c})"/></marker>`).join('')}</defs>`)
+  for (const t of L.tiers) out.push(`<text x="${t.x}" y="12" class="m-tier">${t.label}</text>`)
+  const label = (x, y, text) => (text ? `<text x="${x}" y="${y - 5}" text-anchor="middle" class="m-elabel">${esc(cutText(text.toUpperCase(), 22))}</text>` : '')
+  const visible = r => r && r.a > 0.5
+  // Links between components, moved onto the parts that make the call when open.
+  const drawn = new Set()
+  for (const e of mapData.edges) {
+    let ra = L.nodes[e.from]; let rb = L.nodes[e.to]
+    if (!ra || !rb) continue
+    const pf = (byId[e.from]?.breakdown?.edges ?? []).find(x => x.to === e.to && L.parts[`${e.from}/${x.from}`])
+    if (pf && visible(L.parts[`${e.from}/${pf.from}`])) { ra = L.parts[`${e.from}/${pf.from}`]; drawn.add(`${e.from}|${pf.from}|${e.to}`) }
+    const pt = (byId[e.to]?.breakdown?.edges ?? []).find(x => x.from === e.from && L.parts[`${e.to}/${x.to}`])
+    if (pt && visible(L.parts[`${e.to}/${pt.to}`])) { rb = L.parts[`${e.to}/${pt.to}`]; drawn.add(`${e.to}|${e.from}|${pt.to}`) }
+    const p = linkPath(ra, rb)
+    const c = e.style === 'http' ? 'link' : 'muted'
+    out.push(`<path d="${p.d}" class="m-edge" style="stroke:${color(e.style)}${e.style === 'async' ? ';stroke-dasharray:5 4' : ''}" marker-end="url(#m-${c})"/>${label(p.mx, p.my, e.label)}`)
+  }
+  // A part's own links to other components that the map has no line for.
+  for (const n of mapData.nodes) {
+    for (const x of n.breakdown?.edges ?? []) {
+      const fromPart = L.parts[`${n.id}/${x.from}`]; const toPart = L.parts[`${n.id}/${x.to}`]
+      if (fromPart && !toPart && L.nodes[x.to] && !drawn.has(`${n.id}|${x.from}|${x.to}`) && visible(fromPart)) {
+        const p = linkPath(fromPart, L.nodes[x.to])
+        out.push(`<path d="${p.d}" class="m-edge thin" marker-end="url(#m-muted)"/>${label(p.mx, p.my, x.label)}`)
+      } else if (toPart && !fromPart && L.nodes[x.from] && !drawn.has(`${n.id}|${x.from}|${x.to}`) && visible(toPart)) {
+        const p = linkPath(L.nodes[x.from], toPart)
+        out.push(`<path d="${p.d}" class="m-edge thin" marker-end="url(#m-muted)"/>${label(p.mx, p.my, x.label)}`)
+      }
+    }
+  }
+  // Components: open ones as groups holding their parts.
+  for (const n of mapData.nodes) {
+    const r = L.nodes[n.id]
+    if (!r) continue
+    const isOpen = openSet.has(n.id)
+    const isSel = drawer?.id === n.id
+    const isFocus = (mapData.focus ?? []).includes(n.id)
+    const mark = mapData.marks?.[n.id]
+    const isActive = (mapData.active ?? []).includes(n.id)
+    const pv = partsFor(n)
+    out.push(`<g class="m-node${isOpen ? ' open' : ''}" data-mnode="${esc(n.id)}" opacity="${r.a.toFixed(3)}"><title>${esc(n.label)}${n.sublabel ? ` · ${esc(n.sublabel)}` : ''}</title>`)
+    out.push(`<rect x="${r.x}" y="${r.y}" width="${r.w}" height="${r.h}" rx="${isOpen ? 14 : 9}" class="m-box${isFocus ? ' focus' : ''}${isSel ? ' sel' : ''}"/>`)
+    out.push(`<text x="${r.x + 14}" y="${r.y + 20}" class="m-kind${isFocus ? ' focus' : ''}">${esc(n.kind.toUpperCase())}</text>`)
+    out.push(`<text x="${r.x + 14}" y="${r.y + 38}" class="m-label">${esc(cutText(n.label, isOpen ? 40 : 22))}</text>`)
+    if (!isOpen && n.sublabel) out.push(`<text x="${r.x + 14}" y="${r.y + 54}" class="m-sub">${esc(cutText(n.sublabel, 30))}</text>`)
+    if (isOpen && pv.isQuick) out.push(`<text x="${r.x + 14}" y="${r.y + 54}" class="m-sub">${r.w > 300 ? 'quick look from its files · ' : 'quick look · '}<tspan class="m-cta" data-bd="${esc(n.id)}">✦ Break down</tspan></text>`)
+    else if (isOpen && n.sublabel) out.push(`<text x="${r.x + 14}" y="${r.y + 54}" class="m-sub">${esc(cutText(n.sublabel, 60))}</text>`)
+    out.push(`<text x="${r.x + r.w - 16}" y="${r.y + 22}" text-anchor="end" class="m-chev">${isOpen ? '−' : pv.parts.length ? `+${pv.parts.length}` : ''}</text>`)
+    if (isActive) out.push(`<circle cx="${r.x + r.w - 10}" cy="${r.y + 10}" r="4" class="m-active"/>`)
+    if (mark) out.push(`<text x="${r.x}" y="${r.y - 7}" class="m-mark">${esc(cutText(mark, 40))}</text>`)
+    out.push('</g>')
+    // Links between its parts.
+    const ids = new Set(pv.parts.map(p => p.id))
+    for (const x of pv.edges) {
+      if (!ids.has(x.from) || !ids.has(x.to)) continue
+      const a = L.parts[`${n.id}/${x.from}`]; const b = L.parts[`${n.id}/${x.to}`]
+      if (!a || !b || Math.min(a.a, b.a) < 0.05) continue
+      const p = linkPath(a, b)
+      out.push(`<g opacity="${Math.min(a.a, b.a).toFixed(3)}"><path d="${p.d}" class="m-edge" marker-end="url(#m-muted)"/>${label(p.mx, p.my, x.label)}</g>`)
+    }
+    pv.parts.forEach((part, i) => {
+      const pr = L.parts[`${n.id}/${part.id}`]
+      if (!pr || pr.a < 0.02) return
+      const on = isSel && drawer?.part === part.id
+      out.push(`<g class="m-part" data-mpart="${esc(`${n.id}/${part.id}`)}" opacity="${pr.a.toFixed(3)}"><title>${esc(part.summary ?? part.label)}</title>
+        <rect x="${pr.x}" y="${pr.y}" width="${pr.w}" height="${pr.h}" rx="8" class="m-pbox${on ? ' sel' : ''}"/>
+        <text x="${pr.x + 30}" y="${pr.y + 19}" class="m-kind">${esc((part.role ?? (pv.isQuick ? 'files' : 'part')).toUpperCase())}</text>
+        <text x="${pr.x + 30}" y="${pr.y + 35}" class="m-plabel">${esc(cutText(part.label, 22))}</text>
+        <text x="${pr.x + 30}" y="${pr.y + 50}" class="m-sub">${esc(cutText(part.summary ?? '', 30))}</text>
+        <circle cx="${pr.x + 15}" cy="${pr.y + 16}" r="9" class="m-pin${part.detail ? ' done' : ''}"/>
+        <text x="${pr.x + 15}" y="${pr.y + 19.5}" text-anchor="middle" class="m-pinnum${part.detail ? ' done' : ''}">${i + 1}</text></g>`)
+    })
+  }
+  $('#mapvp').innerHTML = out.join('')
+  $('#mapvp').setAttribute('transform', `translate(${mapView.x},${mapView.y}) scale(${mapView.z})`)
+  $('#mapZoom').textContent = `${Math.round(mapView.z * 100)}%`
+}
+
+// Animate to the layout as it should be now, keeping `anchorId` where it was
+// on screen, so what you clicked stays under the pointer.
+const animateMap = (anchorId, ms = 440) => {
+  const next = layoutMap()
+  const from = mapLayout ?? next
+  const view0 = { x: mapView.x, y: mapView.y }
+  const a0 = anchorId && from.nodes[anchorId]; const a1 = anchorId && next.nodes[anchorId]
+  const shift = a0 && a1 ? { x: (a0.x - a1.x) * mapView.z, y: (a0.y - a1.y) * mapView.z } : { x: 0, y: 0 }
+  // An opened component comes fully into view: pan just enough, zooming out
+  // a little when it is bigger than the canvas.
+  const view = $('#map').getBoundingClientRect()
+  let z1 = mapView.z
+  if (a1 && openSet.has(anchorId)) {
+    const M8 = 24
+    z1 = Math.min(mapView.z, (view.width - M8 * 2) / a1.w, (view.height - M8 * 2) / a1.h)
+    const left = view0.x + shift.x; const top = view0.y + shift.y
+    // Where the node would sit at the new zoom, keeping its top-left in place.
+    const sx = a0 ? view0.x + a0.x * mapView.z : left + a1.x * z1
+    const sy = a0 ? view0.y + a0.y * mapView.z : top + a1.y * z1
+    const nx = Math.min(Math.max(sx, M8), view.width - M8 - a1.w * z1)
+    const ny = Math.min(Math.max(sy, M8), view.height - M8 - a1.h * z1)
+    shift.x = nx - a1.x * z1 - view0.x
+    shift.y = ny - a1.y * z1 - view0.y
+  }
+  const z0 = mapView.z
+  cancelAnimationFrame(mapAnim)
+  const t0 = performance.now()
+  const step = now => {
+    const t = Math.min(1, (now - t0) / ms)
+    mapLayout = t < 1 ? between(from, next, t) : next
+    mapView.x = view0.x + shift.x * ease(t); mapView.y = view0.y + shift.y * ease(t); mapView.z = mix(z0, z1, ease(t))
+    drawMap(mapLayout)
+    if (t < 1) mapAnim = requestAnimationFrame(step)
+  }
+  mapAnim = requestAnimationFrame(step)
+}
+
+const fitMap = () => {
+  const L = layoutMap()
+  const r = $('#map').getBoundingClientRect()
+  if (!L.w || !r.width) return
+  mapView.z = Math.min(1.4, Math.max(0.25, Math.min((r.width - 60) / L.w, (r.height - 60) / L.h)))
+  mapView.x = (r.width - L.w * mapView.z) / 2
+  mapView.y = (r.height - L.h * mapView.z) / 2
+  mapLayout = L
+  drawMap(L)
+}
+
+const renderDiagram = async () => {
+  const next = await api('/api/graph')
+  if (next.error) return
+  mapData = next
+  for (const id of [...openSet]) if (!mapData.nodes.some(n => n.id === id)) openSet.delete(id)
+  if (!mapView.isFitted) { mapView.isFitted = true; return fitMap() }
+  animateMap(drawer?.id)
+}
+
+const toggleNode = id => {
+  if (openSet.has(id)) openSet.delete(id)
+  else openSet.add(id)
+  saveOpen()
+  animateMap(id)
+}
+const setAllOpen = isOpen => {
+  openSet.clear()
+  if (isOpen) for (const n of mapData?.nodes ?? []) openSet.add(n.id)
+  saveOpen()
+  animateMap(null, 520)
+  setTimeout(fitMap, 560)
+}
+
+$('#map').addEventListener('click', async e => {
+  if (mapDragged) { mapDragged = false; return }
+  const bd = e.target.closest('[data-bd]')
+  if (bd) {
+    const res = await api('/api/ask', { kind: 'breakdown', component: bd.dataset.bd })
+    return toast(res.ok ? 'Asked Claude to break this component down: it fills in here when done' : 'Could not reach the session')
+  }
+  const part = e.target.closest('[data-mpart]')
+  if (part) {
+    const key = part.dataset.mpart
+    const nid = key.slice(0, key.indexOf('/')); const pid = key.slice(key.indexOf('/') + 1)
+    if (drawer?.id !== nid) await openDrawer(nid)
+    drawer.part = drawer.part === pid ? null : pid
+    renderDrawer(); drawMap(mapLayout)
     $('#drawer').scrollTop = 0
+    return
   }
+  const node = e.target.closest('[data-mnode]')
+  if (node) {
+    const id = node.dataset.mnode
+    if (e.altKey) {
+      const why = prompt(`Mark ${mapData.nodes.find(n => n.id === id)?.label ?? id}: why it matters (optional)`)
+      if (why !== null) { await api('/api/note', { type: 'mark', text: why.trim() || '·', component: id }); toast('Marked') }
+      return
+    }
+    // The drawer opens first, so the canvas is measured at its new width.
+    if (drawer?.id !== id) await openDrawer(id)
+    else { drawer.part = null; renderDrawer() }
+    toggleNode(id)
+    return
+  }
+  if (drawer) closeDrawer()
 })
-$('#svg').addEventListener('dblclick', e => {
-  const part = e.target.closest('[data-part]')
-  const p = part && drawer ? partsOf(drawer.data).parts.find(x => x.id === part.dataset.part) : null
+$('#map').addEventListener('dblclick', e => {
+  const part = e.target.closest('[data-mpart]')
+  if (!part) return
+  const key = part.dataset.mpart
+  const n = mapData.nodes.find(x => x.id === key.slice(0, key.indexOf('/')))
+  const p = partsFor(n).parts.find(x => x.id === key.slice(key.indexOf('/') + 1))
   if (p?.path) openCode(p.path, p.line)
 })
+// Drag the background to pan; scroll to pan, pinch or ⌘-scroll to zoom.
+$('#map').addEventListener('pointerdown', e => {
+  if (e.button !== 0 || e.target.closest('[data-mnode], [data-mpart]')) return
+  const sx = e.clientX; const sy = e.clientY; const vx = mapView.x; const vy = mapView.y
+  const map = $('#map')
+  map.setPointerCapture(e.pointerId)
+  map.classList.add('panning')
+  const move = ev => {
+    if (Math.abs(ev.clientX - sx) + Math.abs(ev.clientY - sy) > 3) mapDragged = true
+    mapView.x = vx + ev.clientX - sx; mapView.y = vy + ev.clientY - sy
+    drawMap(mapLayout)
+  }
+  const up = () => { map.classList.remove('panning'); map.removeEventListener('pointermove', move); map.removeEventListener('pointerup', up); setTimeout(() => { mapDragged = false }, 0) }
+  map.addEventListener('pointermove', move); map.addEventListener('pointerup', up)
+})
+const zoomMap = (f, px, py) => {
+  const z = Math.min(2.5, Math.max(0.2, mapView.z * f))
+  mapView.x = px - (px - mapView.x) * (z / mapView.z); mapView.y = py - (py - mapView.y) * (z / mapView.z); mapView.z = z
+  drawMap(mapLayout)
+}
+$('#map').addEventListener('wheel', e => {
+  e.preventDefault()
+  const r = $('#map').getBoundingClientRect()
+  if (e.ctrlKey || e.metaKey) zoomMap(Math.exp(-e.deltaY * 0.01), e.clientX - r.left, e.clientY - r.top)
+  else { mapView.x -= e.deltaX; mapView.y -= e.deltaY; drawMap(mapLayout) }
+}, { passive: false })
+$('#mapExpand').addEventListener('click', () => setAllOpen(true))
+$('#mapCollapse').addEventListener('click', () => setAllOpen(false))
+$('#mapFit').addEventListener('click', fitMap)
+$('#mapIn').addEventListener('click', () => { const r = $('#map').getBoundingClientRect(); zoomMap(1.2, r.width / 2, r.height / 2) })
+$('#mapOut').addEventListener('click', () => { const r = $('#map').getBoundingClientRect(); zoomMap(1 / 1.2, r.width / 2, r.height / 2) })
 
 const openDrawer = async id => {
   const prev = drawer?.id === id ? drawer : null
@@ -868,10 +1115,10 @@ const openDrawer = async id => {
   }
   $('#drawer').classList.add('on')
   renderDrawer()
-  renderDiagram()
+  if (mapLayout) drawMap(mapLayout)
 }
 
-const closeDrawer = () => { drawer = null; $('#drawer').classList.remove('on'); renderDiagram() }
+const closeDrawer = () => { drawer = null; $('#drawer').classList.remove('on'); if (mapLayout) drawMap(mapLayout) }
 
 // Folders and files as nested rows; within a folder, today's, changed and
 // entry files first.
@@ -925,7 +1172,7 @@ const renderDrawer = () => {
   const q = drawer.filter.toLowerCase()
   const files = q ? d.files.filter(f => f.path.toLowerCase().includes(q) || (f.summary ?? '').toLowerCase().includes(q)) : d.files
   const missing = d.files.filter(f => !f.summary || f.isStale).length
-  const pv = partsOf(d)
+  const pv = partsFor(mapData?.nodes.find(n => n.id === drawer.id))
   const part = pv.parts.find(x => x.id === drawer.part)
   const n = part ? pv.parts.indexOf(part) + 1 : 0
   const partCard = part ? `<div class="part-card">
@@ -1799,15 +2046,6 @@ document.addEventListener('click', async e => {
     if (folder) { const d = folder.dataset.folder; drawer.expanded.has(d) ? drawer.expanded.delete(d) : drawer.expanded.add(d); return renderDrawer() }
     const file = t.closest('[data-file]')
     if (file) return toggleFile(file.dataset.file)
-  }
-  const node = t.closest('#svg g[data-id]')
-  if (node) {
-    const id = node.dataset.id
-    if (e.altKey) {
-      const meta = data.meta.nodes.find(n => n.id === id)
-      const why = prompt(`Mark ${meta?.label ?? id}: why it matters (optional)`)
-      if (why !== null) { await api('/api/note', { type: 'mark', text: why.trim() || '·', component: id }); toast('Marked') }
-    } else openDrawer(id)
   }
 })
 $('#days').addEventListener('dblclick', async e => {
