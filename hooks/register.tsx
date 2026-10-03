@@ -116,9 +116,9 @@ const SECTION = {
 
 const mapPrompt = (root: string) =>
   [
-    `Map the system architecture of ${root ? `the project in ./${root}` : 'this repository'} for the arch-live diagram.`,
+    `Map the system architecture of the project in ${root} for the arch-live diagram.`,
     'Explore the codebase: package manifests, workspace and docker-compose files, infra config, entry points and top-level directories. Identify the clients, edge (gateways, CDNs, routers), services and workers, queues, data stores and external APIs.',
-    `Then call ${UPDATE_TOOL} once with replace: true${root ? `, root: "${root}"` : ''}, the components and the connections between them. Stay at architecture level: 4 to 12 nodes, each a distinct deployable or system boundary. Give every node a path, relative to the project, to the file where its code starts (an entry point, route or handler, not a folder) and a line when that code sits inside a larger file, plus owns: the folders that belong to it. Mark the 1 or 2 components a newcomer should look at first as focus.`,
+    `Then call ${UPDATE_TOOL} once with replace: true, root: "${root}", the components and the connections between them. Stay at architecture level: 4 to 12 nodes, each a distinct deployable or system boundary. Give every node a path, relative to the project, to the file where its code starts (an entry point, route or handler, not a folder) and a line when that code sits inside a larger file, plus owns: the folders that belong to it. Mark the 1 or 2 components a newcomer should look at first as focus.`,
     `Then call ${DESCRIBE_TOOL} once per component with one plain sentence (under 15 words) for each of its key files: entry points, routes, handlers, models; up to 15 per component.`,
     `Finally, ask me whether to add an "Architecture" section to the README that embeds the diagram (/arch-export writes ${EXPORT_FILE}).`,
   ].join('\n\n')
@@ -155,7 +155,7 @@ const UPDATE_SCHEMA = {
   properties: {
     root: {
       type: 'string',
-      description: 'The project folder, relative to the session folder, when the session folder holds several projects. Omitted, the current one.',
+      description: 'The project folder: a full path, or relative to the session folder. Omitted, the current one.',
     },
     title: { type: 'string', description: 'Diagram title, e.g. the product name.' },
     replace: { type: 'boolean', description: 'Start from an empty diagram instead of merging (use for a full re-map).' },
@@ -256,7 +256,15 @@ const inRoot = (root: string, path: string) => (root ? `${root}/${path}` : path)
 
 const homeThemePath = async ($: EngineInterface) => `${(await $.env.get('HOME')) ?? '~'}/.claude/arch-live/theme.json`
 
-const currentRoot = async ($: EngineInterface) => (await $.state.get({ plugin: 'arch-live', key: 'root' })).value ?? ''
+// The project folder as a full path. A relative one would follow the session's
+// folder, which moves whenever the shell changes directory.
+const absRoot = async ($: EngineInterface, root: string) => {
+  if (root.startsWith('/')) return root
+  const cwd = await $.session.cwd()
+  return root ? `${cwd}/${root}` : cwd
+}
+
+const currentRoot = async ($: EngineInterface) => absRoot($, (await $.state.get({ plugin: 'arch-live', key: 'root' })).value ?? '')
 
 const currentTheme = async ($: EngineInterface) =>
   (await $.state.get({ plugin: 'arch-live', key: 'theme' })).value ?? DEFAULT_THEME
@@ -281,7 +289,8 @@ const loadGraph = async ($: EngineInterface, root: string): Promise<ArchGraph | 
 // The session folder's own map, else the most recently updated map one level
 // down (a folder of repos), else nothing.
 const findRoot = async ($: EngineInterface): Promise<string> => {
-  if (await $.fs.exists(GRAPH_FILE)) return ''
+  const cwd = await $.session.cwd()
+  if (await $.fs.exists(GRAPH_FILE)) return cwd
   const entries = await $.fs.list().catch(() => [])
   let best = { root: '', mtime: -1 }
   for (const entry of entries) {
@@ -290,7 +299,7 @@ const findRoot = async ($: EngineInterface): Promise<string> => {
     const stat = await $.fs.stat(file).catch(() => undefined)
     if (stat && stat.mtimeMs > best.mtime) best = { root: entry.name, mtime: stat.mtimeMs }
   }
-  return best.root
+  return best.root ? `${cwd}/${best.root}` : cwd
 }
 
 const reloadAfter = async ($: EngineInterface, filePath: string) => {
@@ -450,7 +459,7 @@ const openPopout = async ($: EngineInterface) => {
     }
     const graph = (await $.state.get({ plugin: 'arch-live', key: 'graph' })).value ?? null
     await writePopout($, graph, await currentTheme($), true)
-    const file = `${await $.session.cwd()}/${inRoot(await currentRoot($), POPOUT_FILE)}`
+    const file = inRoot(await currentRoot($), POPOUT_FILE)
     const ran = await $.process.run(['open', file])
     if (ran.exitCode !== 0) $.ui.toast(`arch-live: could not open the browser view (${ran.stderr.trim() || ran.exitCode})`)
     else $.ui.toast(`arch-live: the notepad server did not start (${notepadError ?? 'Node was not found'}), so the browser view is read-only`)
@@ -497,9 +506,7 @@ const entryFile = async ($: EngineInterface, dir: string, depth = 0): Promise<st
 // the file at its line, or a folder's entry file. VS Code's or Cursor's CLI
 // (`code` is often Cursor's), else the system default for the file.
 const openInEditor = async ($: EngineInterface, path: string, line?: number) => {
-  const root = await currentRoot($)
-  const cwd = await $.session.cwd()
-  const project = root ? `${cwd}/${root}` : cwd
+  const project = await currentRoot($)
   const abs = path.startsWith('/') ? path : `${project}/${path.replace(/^\.\//, '')}`
   const stat = await $.fs.stat(abs).catch(() => undefined)
   if (!stat) {
@@ -525,12 +532,12 @@ const setDefaultTheme = async ($: EngineInterface) => {
 }
 
 const startMap = async ($: EngineInterface, folder: string) => {
-  const root = cleanRoot(folder) || (await currentRoot($))
+  const root = folder.trim() ? await absRoot($, cleanRoot(folder)) : await currentRoot($)
   await update($, rootAtom, () => root)
   await update($, askAtom, () => null)
   submitSoon($, mapPrompt(root))
   // The prompt waits while Claude is busy; say so, or the button looks dead.
-  $.ui.toast(`arch-live: asked Claude to map ${root || 'this project'}; it starts when Claude is free`)
+  $.ui.toast(`arch-live: asked Claude to map ${root.split('/').pop()}; it starts when Claude is free`)
   void openPane($)
 }
 
@@ -558,11 +565,7 @@ const exportSvg = async ($: EngineInterface): Promise<string> => {
 
 const LOG_SCHEMA_COMPONENT = { type: 'string', description: 'The architecture node id this is about, when there is one.' }
 
-const projectPath = async ($: EngineInterface) => {
-  const cwd = await $.session.cwd()
-  const root = await currentRoot($)
-  return root ? `${cwd}/${root}` : cwd
-}
+const projectPath = currentRoot
 
 const logsDir = async ($: EngineInterface) =>
   `${(await $.env.get('HOME')) ?? '~'}/.claude/arch-live/logs/${projectKey(await projectPath($))}`
@@ -997,14 +1000,14 @@ export const register: Register = on => {
   on('tool.call', { tool: UPDATE_TOOL }, async ($, e) => {
     const args = e as unknown as UpdateArgs
     if (args.root !== undefined) {
-      const root = cleanRoot(args.root)
-      if (root !== (await read($, rootAtom))) {
+      const root = await absRoot($, cleanRoot(args.root))
+      if (root !== (await currentRoot($))) {
         await update($, rootAtom, () => root)
         const existing = await loadGraph($, root).catch(() => null)
         await update($, graphAtom, () => existing)
       }
     }
-    const root = await read($, rootAtom)
+    const root = await currentRoot($)
     const before = await read($, graphAtom)
     const { graph, problems } = applyUpdate(before, args, await $.clock.now())
     if (turn) {
