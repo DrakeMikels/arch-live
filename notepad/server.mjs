@@ -416,6 +416,11 @@ const readBody = (req, limit = 200_000) =>
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url ?? '/', 'http://127.0.0.1')
+  // The bundled layout library is public code, not data: no token needed.
+  if (req.method === 'GET' && url.pathname === '/vendor/elk.bundled.js') {
+    res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8', 'cache-control': 'max-age=86400' })
+    return res.end(readText(path.join(here, 'vendor', 'elk.bundled.js')))
+  }
   const token = url.searchParams.get('t') ?? req.headers['x-notepad-token']
   if (token !== TOKEN) return send(res, 403, { error: 'missing or wrong token' })
 

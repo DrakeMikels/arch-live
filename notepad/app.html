@@ -166,7 +166,9 @@
   #map .m-chev { fill: var(--soft); font-size: 12px; }
   #map .m-active { fill: var(--accent); }
   #map .m-mark { fill: var(--accent); font-size: 11px; font-style: italic; }
-  #map .m-edge { fill: none; stroke-width: 1.3; }
+  #map .m-edge { fill: none; stroke-width: 1.3; stroke: var(--muted); }
+  #map .m-edge.http { stroke: var(--link); }
+  #map .m-edge.async { stroke-dasharray: 5 4; }
   #map .m-edge.thin { stroke: var(--soft); stroke-width: 1; stroke-dasharray: 3 3; }
   #map .m-elabel { fill: var(--soft); font-size: 9px; letter-spacing: .08em; paint-order: stroke; stroke: var(--paper); stroke-width: 4px; }
   #map .m-pbox { fill: var(--nodeFill); stroke: var(--rule); }
@@ -284,6 +286,8 @@
 </style>
 <!-- After the defaults, so the saved theme wins. -->
 <style id="theme"></style>
+<!-- ELK lays out the Diagram tab's map (elkjs 0.9.3, EPL-2.0, see vendor/ELK-LICENSE.md). -->
+<script src="/vendor/elk.bundled.js"></script>
 </head>
 <body>
 <div class="app" id="app">
@@ -755,87 +759,226 @@ let drawer = null // { id, data, filter, expanded: Set, details: Map }
 /* ---------- The map: one canvas, components open in place ---------- */
 
 // The Diagram tab draws the map itself (the pane keeps the static drawing):
-// click a component and it opens where it sits, its parts inside and its
-// neighbours sliding aside; links move to the part that makes the call.
+// click a component and it opens where it sits, its parts inside. ELK (the
+// layout engine behind Mermaid's cleaner layouts) places every box and routes
+// every line around them; the boxes glide between layouts and the lines fade
+// onto their new routes. Without ELK, a simpler column layout draws instead.
 let mapData = null
 let mapLayout = null
 let mapAnim = 0
+let mapTicket = 0
 let mapDragged = false
 const mapView = { x: 0, y: 0, z: 1, isFitted: false }
+const elk = typeof ELK === 'function' ? new ELK() : null
 const openSet = (() => { try { return new Set(JSON.parse(localStorage.getItem(`arch-live-open:${token}`) || '[]')) } catch { return new Set() } })()
 const saveOpen = () => { try { localStorage.setItem(`arch-live-open:${token}`, JSON.stringify([...openSet])) } catch {} }
 const TIER = { client: 0, edge: 1, service: 2, worker: 2, queue: 3, store: 4, external: 5 }
 const TIER_LABEL = ['CLIENTS', 'EDGE', 'SERVICES', 'MESSAGING', 'DATA', 'EXTERNAL']
-const M = { NW: 220, NH: 64, PW: 200, PH: 58, PGX: 40, PGY: 14, PAD: 16, TOP: 60, CGX: 120, RGY: 26, LABEL: 34 }
+const M = { NW: 236, PW: 214, PAD: 16, GAP: 120, RGY: 28 }
+// Character widths of the monospace type at each size, for wrapping.
+const CH = { label: 8.6, sub: 6.4, plabel: 7.7 }
 
 const partsFor = n => (n?.breakdown?.parts?.length
   ? { parts: n.breakdown.parts, edges: n.breakdown.edges ?? [], isQuick: false }
   : { parts: n?.quick ?? [], edges: [], isQuick: true })
 
-// Parts inside an open component: columns follow their connections, else a grid.
-const innerLayout = n => {
-  const { parts, edges } = partsFor(n)
-  if (!parts.length) return { w: M.NW, h: M.TOP + 34, at: {} }
-  const ids = new Set(parts.map(p => p.id))
-  const inner = edges.filter(e => ids.has(e.from) && ids.has(e.to) && e.from !== e.to)
-  const level = Object.fromEntries(parts.map(p => [p.id, 0]))
-  for (let i = 0; i < parts.length; i++) for (const e of inner) if (level[e.to] < level[e.from] + 1 && level[e.from] + 1 < parts.length) level[e.to] = level[e.from] + 1
-  let cols
-  if (inner.length) {
-    cols = []
-    for (const p of parts) (cols[level[p.id]] ??= []).push(p)
-    cols = cols.filter(Boolean)
-  } else {
-    const nc = parts.length <= 2 ? parts.length : parts.length <= 8 ? 2 : 3
-    const per = Math.ceil(parts.length / nc)
-    cols = Array.from({ length: nc }, (_, i) => parts.slice(i * per, (i + 1) * per)).filter(c => c.length)
+// Words into at most `lines` lines of `width` pixels; the last ends in … when cut.
+const wrapText = (text, width, ch, lines) => {
+  const max = Math.max(4, Math.floor(width / ch))
+  const out = []
+  let cur = ''
+  for (const word of String(text ?? '').split(/\s+/).filter(Boolean)) {
+    const next = cur ? `${cur} ${word}` : word
+    if (next.length <= max) { cur = next; continue }
+    if (cur) out.push(cur)
+    cur = word.length > max ? `${word.slice(0, max - 1)}…` : word
+    if (out.length === lines) break
   }
-  const rows = Math.max(...cols.map(c => c.length))
-  const bodyH = rows * M.PH + (rows - 1) * M.PGY
-  const at = {}
-  cols.forEach((c, ci) => c.forEach((p, ri) => {
-    const colH = c.length * M.PH + (c.length - 1) * M.PGY
-    at[p.id] = { x: M.PAD + ci * (M.PW + M.PGX), y: M.TOP + (bodyH - colH) / 2 + ri * (M.PH + M.PGY) }
-  }))
-  return { w: Math.max(M.NW, M.PAD * 2 + cols.length * M.PW + (cols.length - 1) * M.PGX), h: M.TOP + bodyH + M.PAD, at }
+  if (cur && out.length < lines) out.push(cur)
+  if (out.length > lines || (out.length === lines && String(text ?? '').length > out.join(' ').length + 1)) {
+    out.length = lines
+    out[lines - 1] = `${out[lines - 1].slice(0, max - 1).replace(/\s+\S*$/, '') || out[lines - 1].slice(0, max - 1)}…`
+  }
+  return out
 }
 
-// Tiers as columns, as in the pane; open components sized to their parts.
-const layoutMap = () => {
-  const L = { nodes: {}, parts: {}, tiers: [], w: 0, h: 0 }
-  if (!mapData?.nodes?.length) return L
+// What each box says, wrapped, and how tall that makes it.
+const nodeText = (n, isOpen) => {
+  const w = isOpen ? M.NW + 120 : M.NW
+  const label = wrapText(n.label, w - 30, CH.label, 2)
+  const pv = partsFor(n)
+  const sub = isOpen && pv.isQuick ? [] : wrapText(n.sublabel, w - 30, CH.sub, isOpen ? 1 : 2)
+  const head = 26 + label.length * 18 + sub.length * 14 + (isOpen && pv.isQuick ? 14 : 0) + 10
+  return { label, sub, head, h: head + 2 }
+}
+const partText = p => {
+  const label = wrapText(p.label, M.PW - 40, CH.plabel, 2)
+  const sub = wrapText(p.summary, M.PW - 40, CH.sub, 3)
+  return { label, sub, h: 28 + label.length * 16 + sub.length * 13 + 8 }
+}
+
+// Which part a component link should start or end on, when it is open.
+const linkEnds = () => {
+  const byId = Object.fromEntries(mapData.nodes.map(n => [n.id, n]))
+  const ends = []
+  const used = new Set()
+  for (const [i, e] of mapData.edges.entries()) {
+    if (!byId[e.from] || !byId[e.to]) continue
+    let from = e.from
+    let to = e.to
+    const pf = openSet.has(e.from) && (byId[e.from].breakdown?.edges ?? []).find(x => x.to === e.to && partsFor(byId[e.from]).parts.some(p => p.id === x.from))
+    if (pf) { from = `${e.from}/${pf.from}`; used.add(`${e.from}|${pf.from}|${e.to}`) }
+    const pt = openSet.has(e.to) && (byId[e.to].breakdown?.edges ?? []).find(x => x.from === e.from && partsFor(byId[e.to]).parts.some(p => p.id === x.to))
+    if (pt) { to = `${e.to}/${pt.to}`; used.add(`${e.to}|${e.from}|${pt.to}`) }
+    ends.push({ id: `e${i}`, from, to, label: e.label ?? '', style: e.style ?? 'call' })
+  }
+  // A part's own links to other components that the map has no line for.
+  for (const n of mapData.nodes) {
+    if (!openSet.has(n.id)) continue
+    const ids = new Set(partsFor(n).parts.map(p => p.id))
+    for (const [i, x] of (n.breakdown?.edges ?? []).entries()) {
+      if (ids.has(x.from) && !ids.has(x.to) && byId[x.to] && !used.has(`${n.id}|${x.from}|${x.to}`)) ends.push({ id: `x${n.id}${i}`, from: `${n.id}/${x.from}`, to: x.to, label: x.label ?? '', style: 'thin' })
+      else if (ids.has(x.to) && !ids.has(x.from) && byId[x.from] && !used.has(`${n.id}|${x.from}|${x.to}`) && !mapData.edges.some(e => e.from === x.from && e.to === n.id)) ends.push({ id: `x${n.id}${i}`, from: x.from, to: `${n.id}/${x.to}`, label: x.label ?? '', style: 'thin' })
+    }
+  }
+  return ends
+}
+const labelBox = text => (text ? [{ text, width: Math.min(150, text.length * 5.8 + 10), height: 13 }] : [])
+
+// The map as an ELK graph: tiers are partitions (columns, as in the pane);
+// open components hold their parts and their parts' links.
+const elkGraph = () => {
+  const children = mapData.nodes.map(n => {
+    const isOpen = openSet.has(n.id)
+    const t = nodeText(n, isOpen)
+    const node = { id: n.id, width: isOpen ? M.NW + 120 : M.NW, height: t.h, layoutOptions: { 'elk.partitioning.partition': String(TIER[n.kind] ?? 2) } }
+    if (isOpen) {
+      const pv = partsFor(n)
+      const ids = new Set(pv.parts.map(p => p.id))
+      node.children = pv.parts.map(p => ({ id: `${n.id}/${p.id}`, width: M.PW, height: partText(p).h }))
+      node.edges = pv.edges.filter(x => ids.has(x.from) && ids.has(x.to) && x.from !== x.to).map((x, i) => ({ id: `i${n.id}${i}`, sources: [`${n.id}/${x.from}`], targets: [`${n.id}/${x.to}`], labels: labelBox(x.label) }))
+      node.layoutOptions = {
+        ...node.layoutOptions,
+        'elk.padding': `[top=${t.head + 8},left=${M.PAD},bottom=${M.PAD},right=${M.PAD}]`,
+        'elk.layered.spacing.nodeNodeBetweenLayers': '46',
+        'elk.spacing.nodeNode': '16',
+        // At least as wide as its header, however few parts it holds.
+        'elk.nodeSize.constraints': 'MINIMUM_SIZE',
+        'elk.nodeSize.minimum': `(${M.NW + 120}, ${t.h + 30})`,
+      }
+      delete node.height
+      if (!node.children.length) node.height = t.h + 30
+    }
+    return node
+  })
+  return {
+    id: 'root',
+    layoutOptions: {
+      'elk.algorithm': 'layered',
+      'elk.direction': 'RIGHT',
+      'elk.hierarchyHandling': 'INCLUDE_CHILDREN',
+      'elk.partitioning.activate': 'true',
+      'elk.edgeRouting': 'ORTHOGONAL',
+      'elk.layered.spacing.nodeNodeBetweenLayers': String(M.GAP),
+      'elk.spacing.nodeNode': String(M.RGY),
+      'elk.spacing.edgeNode': '18',
+      'elk.spacing.edgeEdge': '10',
+      'elk.layered.spacing.edgeNodeBetweenLayers': '18',
+      'elk.layered.spacing.edgeEdgeBetweenLayers': '10',
+      'elk.layered.nodePlacement.strategy': 'NETWORK_SIMPLEX',
+      'elk.layered.crossingMinimization.semiInteractive': 'true',
+      'elk.edgeLabels.placement': 'CENTER',
+      'elk.padding': '[top=40,left=20,bottom=20,right=20]',
+    },
+    children,
+    edges: linkEnds().map(x => ({ id: x.id, sources: [x.from], targets: [x.to], labels: labelBox(x.label), style: x.style })),
+  }
+}
+
+// ELK's answer as absolute boxes, routes and label spots.
+const fromElk = (res, graph) => {
+  const L = { nodes: {}, parts: {}, edges: [], tiers: [], w: res.width, h: res.height, routed: true }
+  const styleOf = Object.fromEntries(graph.edges.map(e => [e.id, e.style]))
+  const addEdges = (list, ox, oy) => {
+    for (const e of list ?? []) {
+      const s = e.sections?.[0]
+      if (!s) continue
+      const pts = [s.startPoint, ...(s.bendPoints ?? []), s.endPoint].map(p => ({ x: p.x + ox, y: p.y + oy }))
+      L.edges.push({ id: e.id, pts, style: styleOf[e.id] ?? 'call', labels: (e.labels ?? []).map(l => ({ text: l.text, x: l.x + ox + l.width / 2, y: l.y + oy + l.height - 3 })) })
+    }
+  }
+  for (const c of res.children ?? []) {
+    L.nodes[c.id] = { x: c.x, y: c.y, w: c.width, h: c.height, a: 1 }
+    for (const k of c.children ?? []) L.parts[k.id] = { x: c.x + k.x, y: c.y + k.y, w: k.width, h: k.height, a: 1 }
+    addEdges(c.edges, c.x, c.y)
+  }
+  addEdges(res.edges, 0, 0)
+  const tiers = {}
+  for (const n of mapData.nodes) {
+    const r = L.nodes[n.id]
+    const t = TIER[n.kind] ?? 2
+    if (r) tiers[t] = Math.min(tiers[t] ?? Infinity, r.x)
+  }
+  L.tiers = Object.entries(tiers).map(([t, x]) => ({ label: TIER_LABEL[t], x })).sort((a, b) => a.x - b.x)
+  return L
+}
+
+// Without ELK: tiers as columns, parts in a grid, lines drawn as curves.
+const columnLayout = () => {
+  const L = { nodes: {}, parts: {}, tiers: [], edges: [], w: 0, h: 0, routed: false }
   const cols = TIER_LABEL.map(() => [])
   for (const n of [...mapData.nodes].sort((a, b) => a.order - b.order)) cols[TIER[n.kind] ?? 2].push(n)
-  const sizes = Object.fromEntries(mapData.nodes.map(n => [n.id, openSet.has(n.id) ? innerLayout(n) : { w: M.NW, h: M.NH, at: {} }]))
-  const used = cols
-    .map((c, i) => ({ i, c, w: Math.max(0, ...c.map(n => sizes[n.id].w)), h: c.reduce((s, n) => s + sizes[n.id].h, 0) + Math.max(0, c.length - 1) * M.RGY }))
-    .filter(x => x.c.length)
+  const size = n => {
+    const t = nodeText(n, openSet.has(n.id))
+    if (!openSet.has(n.id)) return { w: M.NW, h: t.h, at: {} }
+    const parts = partsFor(n).parts
+    const per = Math.max(1, Math.ceil(parts.length / 2))
+    const at = {}
+    let colY = [t.head + 8, t.head + 8]
+    parts.forEach((p, i) => { const c = Math.floor(i / per); at[p.id] = { x: M.PAD + c * (M.PW + 30), y: colY[c] }; colY[c] += partText(p).h + 14 })
+    return { w: Math.max(M.NW, M.PAD * 2 + (parts.length > 1 ? 2 : 1) * M.PW + (parts.length > 1 ? 30 : 0)), h: Math.max(...colY) + M.PAD, at }
+  }
+  const sizes = Object.fromEntries(mapData.nodes.map(n => [n.id, size(n)]))
+  const used = cols.map((c, i) => ({ i, c, w: Math.max(0, ...c.map(n => sizes[n.id].w)), h: c.reduce((s, n) => s + sizes[n.id].h, 0) + Math.max(0, c.length - 1) * M.RGY })).filter(x => x.c.length)
   const maxH = Math.max(0, ...used.map(x => x.h))
-  let x = 0
+  let x = 20
   for (const col of used) {
     L.tiers.push({ label: TIER_LABEL[col.i], x })
-    let y = M.LABEL + (maxH - col.h) / 2
+    let y = 40 + (maxH - col.h) / 2
     for (const n of col.c) {
       const s = sizes[n.id]
-      const nx = x + (col.w - s.w) / 2
-      L.nodes[n.id] = { x: nx, y, w: s.w, h: s.h, a: 1 }
-      for (const [pid, r] of Object.entries(s.at)) L.parts[`${n.id}/${pid}`] = { x: nx + r.x, y: y + r.y, w: M.PW, h: M.PH, a: 1 }
+      L.nodes[n.id] = { x: x + (col.w - s.w) / 2, y, w: s.w, h: s.h, a: 1 }
+      for (const [pid, r] of Object.entries(s.at)) L.parts[`${n.id}/${pid}`] = { x: L.nodes[n.id].x + r.x, y: y + r.y, w: M.PW, h: partText(partsFor(n).parts.find(p => p.id === pid)).h, a: 1 }
       y += s.h + M.RGY
     }
-    x += col.w + M.CGX
+    x += col.w + M.GAP
   }
-  L.w = Math.max(0, x - M.CGX)
-  L.h = maxH + M.LABEL
+  L.w = x - M.GAP + 20
+  L.h = maxH + 60
   return L
+}
+
+const computeLayout = async () => {
+  if (!mapData?.nodes?.length) return { nodes: {}, parts: {}, tiers: [], edges: [], w: 0, h: 0, routed: false }
+  if (elk) {
+    try {
+      const graph = elkGraph()
+      return fromElk(await elk.layout(graph), graph)
+    } catch (err) {
+      console.warn('arch-live: ELK layout failed, using columns', err)
+    }
+  }
+  return columnLayout()
 }
 
 const ease = t => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2)
 const mix = (a, b, t) => a + (b - a) * t
-// A frame between two layouts: boxes glide and resize; parts that appear
-// fade in once there is room, parts that go fade out first.
+// A frame between two layouts: boxes glide and resize; parts that appear fade
+// in once there is room, parts that go fade out first; old lines fade out and
+// the new routes fade in as the boxes settle.
 const between = (A, B, t) => {
   const k = ease(t)
-  const out = { nodes: {}, parts: {}, tiers: B.tiers, w: mix(A.w, B.w, k), h: mix(A.h, B.h, k) }
+  const out = { nodes: {}, parts: {}, tiers: B.tiers, w: mix(A.w, B.w, k), h: mix(A.h, B.h, k), routed: B.routed, edges: [] }
   for (const id of new Set([...Object.keys(A.nodes), ...Object.keys(B.nodes)])) {
     const a = A.nodes[id]; const b = B.nodes[id]
     out.nodes[id] = a && b ? { x: mix(a.x, b.x, k), y: mix(a.y, b.y, k), w: mix(a.w, b.w, k), h: mix(a.h, b.h, k), a: 1 } : { ...(b ?? a), a: b ? k : 1 - k }
@@ -844,15 +987,31 @@ const between = (A, B, t) => {
     const a = A.parts[id]; const b = B.parts[id]
     const nid = id.slice(0, id.indexOf('/'))
     const node = out.nodes[nid]
-    if (a && b) out.parts[id] = { x: mix(a.x, b.x, k), y: mix(a.y, b.y, k), w: b.w, h: b.h, a: 1 }
+    if (a && b) out.parts[id] = { x: mix(a.x, b.x, k), y: mix(a.y, b.y, k), w: mix(a.w, b.w, k), h: mix(a.h, b.h, k), a: 1 }
     else if (b) out.parts[id] = { x: node.x + (b.x - B.nodes[nid].x), y: node.y + (b.y - B.nodes[nid].y), w: b.w, h: b.h, a: Math.max(0, (t - 0.55) / 0.45) }
     else out.parts[id] = { x: node.x + (a.x - A.nodes[nid].x), y: node.y + (a.y - A.nodes[nid].y), w: a.w, h: a.h, a: Math.max(0, 1 - t / 0.3) }
   }
+  const fadeOut = Math.max(0, 1 - t / 0.3)
+  const fadeIn = Math.max(0, (t - 0.72) / 0.28)
+  if (A.routed && fadeOut > 0) out.edges.push(...A.edges.map(e => ({ ...e, a: fadeOut })))
+  if (B.routed && fadeIn > 0) out.edges.push(...B.edges.map(e => ({ ...e, a: fadeIn })))
   return out
 }
 
-const cutText = (t, n) => (String(t ?? '').length > n ? `${String(t).slice(0, n - 1)}…` : String(t ?? ''))
-// A curve between two boxes: side to side across columns, top to bottom within one.
+// An orthogonal route with softly rounded corners.
+const roundRoute = pts => {
+  let d = `M ${pts[0].x} ${pts[0].y}`
+  for (let i = 1; i < pts.length - 1; i++) {
+    const p0 = pts[i - 1]; const p1 = pts[i]; const p2 = pts[i + 1]
+    const r = Math.min(8, Math.hypot(p1.x - p0.x, p1.y - p0.y) / 2, Math.hypot(p2.x - p1.x, p2.y - p1.y) / 2)
+    const a = { x: p1.x + Math.sign(p0.x - p1.x) * r, y: p1.y + Math.sign(p0.y - p1.y) * r }
+    const b = { x: p1.x + Math.sign(p2.x - p1.x) * r, y: p1.y + Math.sign(p2.y - p1.y) * r }
+    d += ` L ${a.x} ${a.y} Q ${p1.x} ${p1.y} ${b.x} ${b.y}`
+  }
+  const last = pts[pts.length - 1]
+  return `${d} L ${last.x} ${last.y}`
+}
+// The fallback's curve between two boxes.
 const linkPath = (ra, rb) => {
   const cy = r => r.y + r.h / 2
   if (ra.x + ra.w <= rb.x || rb.x + rb.w <= ra.x) {
@@ -865,135 +1024,112 @@ const linkPath = (ra, rb) => {
   const isDown = rb.y > ra.y
   const x1 = ra.x + ra.w / 2; const x2 = rb.x + rb.w / 2
   const y1 = isDown ? ra.y + ra.h : ra.y; const y2 = isDown ? rb.y : rb.y + rb.h
-  const dy = (y2 - y1) / 2
-  return { d: `M ${x1} ${y1} C ${x1} ${y1 + dy}, ${x2} ${y2 - dy}, ${x2} ${y2}`, mx: (x1 + x2) / 2, my: (y1 + y2) / 2 }
+  return { d: `M ${x1} ${y1} C ${x1} ${(y1 + y2) / 2}, ${x2} ${(y1 + y2) / 2}, ${x2} ${y2}`, mx: (x1 + x2) / 2, my: (y1 + y2) / 2 }
 }
+const cutText = (t, n) => (String(t ?? '').length > n ? `${String(t).slice(0, n - 1)}…` : String(t ?? ''))
+const mapLines = (lines, x, y, lh, cls) => (lines.length ? `<text class="${cls}">${lines.map((l, i) => `<tspan x="${x}" y="${y + i * lh}">${esc(l)}</tspan>`).join('')}</text>` : '')
 
 const drawMap = L => {
   if (!mapData) return
   const out = []
-  const byId = Object.fromEntries(mapData.nodes.map(n => [n.id, n]))
-  const color = s => (s === 'http' ? 'var(--link)' : 'var(--muted)')
-  out.push(`<defs>${['muted', 'link'].map(c => `<marker id="m-${c}" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L8,4 L0,8 z" style="fill:var(--${c})"/></marker>`).join('')}</defs>`)
-  for (const t of L.tiers) out.push(`<text x="${t.x}" y="12" class="m-tier">${t.label}</text>`)
-  const label = (x, y, text) => (text ? `<text x="${x}" y="${y - 5}" text-anchor="middle" class="m-elabel">${esc(cutText(text.toUpperCase(), 22))}</text>` : '')
-  const visible = r => r && r.a > 0.5
-  // Links between components, moved onto the parts that make the call when open.
-  const drawn = new Set()
-  for (const e of mapData.edges) {
-    let ra = L.nodes[e.from]; let rb = L.nodes[e.to]
-    if (!ra || !rb) continue
-    const pf = (byId[e.from]?.breakdown?.edges ?? []).find(x => x.to === e.to && L.parts[`${e.from}/${x.from}`])
-    if (pf && visible(L.parts[`${e.from}/${pf.from}`])) { ra = L.parts[`${e.from}/${pf.from}`]; drawn.add(`${e.from}|${pf.from}|${e.to}`) }
-    const pt = (byId[e.to]?.breakdown?.edges ?? []).find(x => x.from === e.from && L.parts[`${e.to}/${x.to}`])
-    if (pt && visible(L.parts[`${e.to}/${pt.to}`])) { rb = L.parts[`${e.to}/${pt.to}`]; drawn.add(`${e.to}|${e.from}|${pt.to}`) }
-    const p = linkPath(ra, rb)
-    const c = e.style === 'http' ? 'link' : 'muted'
-    out.push(`<path d="${p.d}" class="m-edge" style="stroke:${color(e.style)}${e.style === 'async' ? ';stroke-dasharray:5 4' : ''}" marker-end="url(#m-${c})"/>${label(p.mx, p.my, e.label)}`)
-  }
-  // A part's own links to other components that the map has no line for.
-  for (const n of mapData.nodes) {
-    for (const x of n.breakdown?.edges ?? []) {
-      const fromPart = L.parts[`${n.id}/${x.from}`]; const toPart = L.parts[`${n.id}/${x.to}`]
-      if (fromPart && !toPart && L.nodes[x.to] && !drawn.has(`${n.id}|${x.from}|${x.to}`) && visible(fromPart)) {
-        const p = linkPath(fromPart, L.nodes[x.to])
-        out.push(`<path d="${p.d}" class="m-edge thin" marker-end="url(#m-muted)"/>${label(p.mx, p.my, x.label)}`)
-      } else if (toPart && !fromPart && L.nodes[x.from] && !drawn.has(`${n.id}|${x.from}|${x.to}`) && visible(toPart)) {
-        const p = linkPath(L.nodes[x.from], toPart)
-        out.push(`<path d="${p.d}" class="m-edge thin" marker-end="url(#m-muted)"/>${label(p.mx, p.my, x.label)}`)
-      }
+  out.push(`<defs>${['muted', 'link', 'soft'].map(c => `<marker id="m-${c}" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L8,4 L0,8 z" style="fill:var(--${c})"/></marker>`).join('')}</defs>`)
+  const top = Math.min(...Object.values(L.nodes).map(r => r.y), 40)
+  for (const t of L.tiers) out.push(`<text x="${t.x}" y="${top - 16}" class="m-tier">${t.label}</text>`)
+  const edgeClass = s => (s === 'http' ? 'http' : s === 'async' ? 'async' : s === 'thin' ? 'thin' : '')
+  const marker = s => (s === 'http' ? 'link' : s === 'thin' ? 'soft' : 'muted')
+  const edgeOut = []
+  if (L.routed) {
+    for (const e of L.edges) {
+      if (e.a <= 0.01) continue
+      edgeOut.push(`<g opacity="${(e.a ?? 1).toFixed(3)}"><path d="${roundRoute(e.pts)}" class="m-edge ${edgeClass(e.style)}" marker-end="url(#m-${marker(e.style)})"/>${e.labels.map(l => `<text x="${l.x}" y="${l.y}" text-anchor="middle" class="m-elabel">${esc(cutText(l.text.toUpperCase(), 24))}</text>`).join('')}</g>`)
+    }
+  } else {
+    for (const x of linkEnds()) {
+      const ra = L.nodes[x.from] ?? L.parts[x.from]; const rb = L.nodes[x.to] ?? L.parts[x.to]
+      if (!ra || !rb || Math.min(ra.a, rb.a) < 0.5) continue
+      const p = linkPath(ra, rb)
+      edgeOut.push(`<path d="${p.d}" class="m-edge ${edgeClass(x.style)}" marker-end="url(#m-${marker(x.style)})"/>${x.label ? `<text x="${p.mx}" y="${p.my - 5}" text-anchor="middle" class="m-elabel">${esc(cutText(x.label.toUpperCase(), 22))}</text>` : ''}`)
     }
   }
-  // Components: open ones as groups holding their parts.
+  // Components first, then every line above their fills, then the parts.
+  const partOut = []
   for (const n of mapData.nodes) {
     const r = L.nodes[n.id]
     if (!r) continue
     const isOpen = openSet.has(n.id)
-    const isSel = drawer?.id === n.id
+    const t = nodeText(n, isOpen)
+    const pv = partsFor(n)
     const isFocus = (mapData.focus ?? []).includes(n.id)
     const mark = mapData.marks?.[n.id]
-    const isActive = (mapData.active ?? []).includes(n.id)
-    const pv = partsFor(n)
     out.push(`<g class="m-node${isOpen ? ' open' : ''}" data-mnode="${esc(n.id)}" opacity="${r.a.toFixed(3)}"><title>${esc(n.label)}${n.sublabel ? ` · ${esc(n.sublabel)}` : ''}</title>`)
-    out.push(`<rect x="${r.x}" y="${r.y}" width="${r.w}" height="${r.h}" rx="${isOpen ? 14 : 9}" class="m-box${isFocus ? ' focus' : ''}${isSel ? ' sel' : ''}"/>`)
+    out.push(`<rect x="${r.x}" y="${r.y}" width="${r.w}" height="${r.h}" rx="${isOpen ? 14 : 9}" class="m-box${isFocus ? ' focus' : ''}${drawer?.id === n.id ? ' sel' : ''}"/>`)
     out.push(`<text x="${r.x + 14}" y="${r.y + 20}" class="m-kind${isFocus ? ' focus' : ''}">${esc(n.kind.toUpperCase())}</text>`)
-    out.push(`<text x="${r.x + 14}" y="${r.y + 38}" class="m-label">${esc(cutText(n.label, isOpen ? 40 : 22))}</text>`)
-    if (!isOpen && n.sublabel) out.push(`<text x="${r.x + 14}" y="${r.y + 54}" class="m-sub">${esc(cutText(n.sublabel, 30))}</text>`)
-    if (isOpen && pv.isQuick) out.push(`<text x="${r.x + 14}" y="${r.y + 54}" class="m-sub">${r.w > 300 ? 'quick look from its files · ' : 'quick look · '}<tspan class="m-cta" data-bd="${esc(n.id)}">✦ Break down</tspan></text>`)
-    else if (isOpen && n.sublabel) out.push(`<text x="${r.x + 14}" y="${r.y + 54}" class="m-sub">${esc(cutText(n.sublabel, 60))}</text>`)
-    out.push(`<text x="${r.x + r.w - 16}" y="${r.y + 22}" text-anchor="end" class="m-chev">${isOpen ? '−' : pv.parts.length ? `+${pv.parts.length}` : ''}</text>`)
-    if (isActive) out.push(`<circle cx="${r.x + r.w - 10}" cy="${r.y + 10}" r="4" class="m-active"/>`)
-    if (mark) out.push(`<text x="${r.x}" y="${r.y - 7}" class="m-mark">${esc(cutText(mark, 40))}</text>`)
+    out.push(mapLines(t.label, r.x + 14, r.y + 39, 18, 'm-label'))
+    out.push(mapLines(t.sub, r.x + 14, r.y + 39 + t.label.length * 18 - 2, 14, 'm-sub'))
+    if (isOpen && pv.isQuick) out.push(`<text x="${r.x + 14}" y="${r.y + 37 + t.label.length * 18}" class="m-sub">${r.w > 420 ? 'quick look from its files · ' : 'quick look · '}<tspan class="m-cta" data-bd="${esc(n.id)}">✦ Break down with Claude</tspan></text>`)
+    out.push(`<text x="${r.x + r.w - 14}" y="${r.y + 21}" text-anchor="end" class="m-chev">${isOpen ? '−' : pv.parts.length ? `+${pv.parts.length}` : ''}</text>`)
+    if ((mapData.active ?? []).includes(n.id)) out.push(`<circle cx="${r.x + r.w - 10}" cy="${r.y + 10}" r="4" class="m-active"/>`)
+    if (mark) out.push(`<text x="${r.x}" y="${r.y - 7}" class="m-mark">${esc(cutText(mark, 44))}</text>`)
     out.push('</g>')
-    // Links between its parts.
-    const ids = new Set(pv.parts.map(p => p.id))
-    for (const x of pv.edges) {
-      if (!ids.has(x.from) || !ids.has(x.to)) continue
-      const a = L.parts[`${n.id}/${x.from}`]; const b = L.parts[`${n.id}/${x.to}`]
-      if (!a || !b || Math.min(a.a, b.a) < 0.05) continue
-      const p = linkPath(a, b)
-      out.push(`<g opacity="${Math.min(a.a, b.a).toFixed(3)}"><path d="${p.d}" class="m-edge" marker-end="url(#m-muted)"/>${label(p.mx, p.my, x.label)}</g>`)
-    }
     pv.parts.forEach((part, i) => {
       const pr = L.parts[`${n.id}/${part.id}`]
       if (!pr || pr.a < 0.02) return
-      const on = isSel && drawer?.part === part.id
-      out.push(`<g class="m-part" data-mpart="${esc(`${n.id}/${part.id}`)}" opacity="${pr.a.toFixed(3)}"><title>${esc(part.summary ?? part.label)}</title>
+      const pt = partText(part)
+      const on = drawer?.id === n.id && drawer?.part === part.id
+      partOut.push(`<g class="m-part" data-mpart="${esc(`${n.id}/${part.id}`)}" opacity="${pr.a.toFixed(3)}"><title>${esc(part.summary ?? part.label)}</title>
         <rect x="${pr.x}" y="${pr.y}" width="${pr.w}" height="${pr.h}" rx="8" class="m-pbox${on ? ' sel' : ''}"/>
-        <text x="${pr.x + 30}" y="${pr.y + 19}" class="m-kind">${esc((part.role ?? (pv.isQuick ? 'files' : 'part')).toUpperCase())}</text>
-        <text x="${pr.x + 30}" y="${pr.y + 35}" class="m-plabel">${esc(cutText(part.label, 22))}</text>
-        <text x="${pr.x + 30}" y="${pr.y + 50}" class="m-sub">${esc(cutText(part.summary ?? '', 30))}</text>
-        <circle cx="${pr.x + 15}" cy="${pr.y + 16}" r="9" class="m-pin${part.detail ? ' done' : ''}"/>
-        <text x="${pr.x + 15}" y="${pr.y + 19.5}" text-anchor="middle" class="m-pinnum${part.detail ? ' done' : ''}">${i + 1}</text></g>`)
+        <text x="${pr.x + 32}" y="${pr.y + 19}" class="m-kind">${esc((part.role ?? (pv.isQuick ? 'files' : 'part')).toUpperCase())}</text>
+        ${mapLines(pt.label, pr.x + 32, pr.y + 36, 16, 'm-plabel')}
+        ${mapLines(pt.sub, pr.x + 32, pr.y + 36 + pt.label.length * 16 - 2, 13, 'm-sub')}
+        <circle cx="${pr.x + 16}" cy="${pr.y + 16}" r="9" class="m-pin${part.detail ? ' done' : ''}"/>
+        <text x="${pr.x + 16}" y="${pr.y + 19.5}" text-anchor="middle" class="m-pinnum${part.detail ? ' done' : ''}">${i + 1}</text></g>`)
     })
   }
-  $('#mapvp').innerHTML = out.join('')
+  $('#mapvp').innerHTML = out.join('') + edgeOut.join('') + partOut.join('')
   $('#mapvp').setAttribute('transform', `translate(${mapView.x},${mapView.y}) scale(${mapView.z})`)
   $('#mapZoom').textContent = `${Math.round(mapView.z * 100)}%`
 }
 
 // Animate to the layout as it should be now, keeping `anchorId` where it was
-// on screen, so what you clicked stays under the pointer.
-const animateMap = (anchorId, ms = 440) => {
-  const next = layoutMap()
+// on screen and, when it just opened, bringing it fully into view.
+const animateMap = async (anchorId, ms = 460) => {
+  const ticket = ++mapTicket
+  const next = await computeLayout()
+  if (ticket !== mapTicket) return
   const from = mapLayout ?? next
   const view0 = { x: mapView.x, y: mapView.y }
-  const a0 = anchorId && from.nodes[anchorId]; const a1 = anchorId && next.nodes[anchorId]
-  const shift = a0 && a1 ? { x: (a0.x - a1.x) * mapView.z, y: (a0.y - a1.y) * mapView.z } : { x: 0, y: 0 }
-  // An opened component comes fully into view: pan just enough, zooming out
-  // a little when it is bigger than the canvas.
-  const view = $('#map').getBoundingClientRect()
-  let z1 = mapView.z
-  if (a1 && openSet.has(anchorId)) {
-    const M8 = 24
-    z1 = Math.min(mapView.z, (view.width - M8 * 2) / a1.w, (view.height - M8 * 2) / a1.h)
-    const left = view0.x + shift.x; const top = view0.y + shift.y
-    // Where the node would sit at the new zoom, keeping its top-left in place.
-    const sx = a0 ? view0.x + a0.x * mapView.z : left + a1.x * z1
-    const sy = a0 ? view0.y + a0.y * mapView.z : top + a1.y * z1
-    const nx = Math.min(Math.max(sx, M8), view.width - M8 - a1.w * z1)
-    const ny = Math.min(Math.max(sy, M8), view.height - M8 - a1.h * z1)
-    shift.x = nx - a1.x * z1 - view0.x
-    shift.y = ny - a1.y * z1 - view0.y
-  }
   const z0 = mapView.z
+  const a0 = anchorId && from.nodes[anchorId]; const a1 = anchorId && next.nodes[anchorId]
+  let z1 = z0
+  let x1 = a0 && a1 ? view0.x + (a0.x - a1.x) * z0 : view0.x
+  let y1 = a0 && a1 ? view0.y + (a0.y - a1.y) * z0 : view0.y
+  if (a1 && openSet.has(anchorId)) {
+    const view = $('#map').getBoundingClientRect()
+    const MG = 24
+    z1 = Math.min(z0, (view.width - MG * 2) / a1.w, (view.height - MG * 2) / a1.h)
+    const sx = a0 ? view0.x + a0.x * z0 : x1 + a1.x * z1
+    const sy = a0 ? view0.y + a0.y * z0 : y1 + a1.y * z1
+    x1 = Math.min(Math.max(sx, MG), view.width - MG - a1.w * z1) - a1.x * z1
+    y1 = Math.min(Math.max(sy, MG), view.height - MG - a1.h * z1) - a1.y * z1
+  }
   cancelAnimationFrame(mapAnim)
   const t0 = performance.now()
   const step = now => {
     const t = Math.min(1, (now - t0) / ms)
+    const k = ease(t)
     mapLayout = t < 1 ? between(from, next, t) : next
-    mapView.x = view0.x + shift.x * ease(t); mapView.y = view0.y + shift.y * ease(t); mapView.z = mix(z0, z1, ease(t))
+    mapView.x = mix(view0.x, x1, k); mapView.y = mix(view0.y, y1, k); mapView.z = mix(z0, z1, k)
     drawMap(mapLayout)
     if (t < 1) mapAnim = requestAnimationFrame(step)
   }
   mapAnim = requestAnimationFrame(step)
 }
 
-const fitMap = () => {
-  const L = layoutMap()
+const fitMap = async () => {
+  const L = await computeLayout()
   const r = $('#map').getBoundingClientRect()
   if (!L.w || !r.width) return
-  mapView.z = Math.min(1.4, Math.max(0.25, Math.min((r.width - 60) / L.w, (r.height - 60) / L.h)))
+  mapView.z = Math.min(1.4, Math.max(0.25, Math.min((r.width - 40) / L.w, (r.height - 40) / L.h)))
   mapView.x = (r.width - L.w * mapView.z) / 2
   mapView.y = (r.height - L.h * mapView.z) / 2
   mapLayout = L
@@ -1015,11 +1151,11 @@ const toggleNode = id => {
   saveOpen()
   animateMap(id)
 }
-const setAllOpen = isOpen => {
+const setAllOpen = async isOpen => {
   openSet.clear()
   if (isOpen) for (const n of mapData?.nodes ?? []) openSet.add(n.id)
   saveOpen()
-  animateMap(null, 520)
+  await animateMap(null, 520)
   setTimeout(fitMap, 560)
 }
 
