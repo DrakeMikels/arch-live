@@ -565,7 +565,7 @@ const exportSvg = async ($: EngineInterface): Promise<string> => {
 
 const LOG_SCHEMA_COMPONENT = { type: 'string', description: 'The architecture node id this is about, when there is one.' }
 
-const projectPath = currentRoot
+const projectPath = async ($: EngineInterface) => currentRoot($)
 
 const logsDir = async ($: EngineInterface) =>
   `${(await $.env.get('HOME')) ?? '~'}/.claude/arch-live/logs/${projectKey(await projectPath($))}`
