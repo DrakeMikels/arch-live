@@ -1,8 +1,9 @@
 // arch-live notepad: a local, dependency-free server for the browser view of
-// the work journal. The mod starts it per session (`node server.mjs --logs
-// <dir> --project <path> --session <id>`) and stops it with the session.
-// Every session on a project shares the logs folder, so each notepad sees
-// the others' turns, notes and boards live. It binds 127.0.0.1
+// the work journal. One runs per project, on that project's own port; any open
+// session's mod may start it (`node server.mjs --logs <dir> --project <path>
+// --session <id>`), and when that session goes, another takes over on the same
+// address. A page says which session it is for with `s=<id>` in its address;
+// requests for Claude go to that session's inbox file, which its mod reads. It binds 127.0.0.1
 // on a free port, prints `NOTEPAD <url>`, and answers only requests carrying
 // the token in that url.
 //
@@ -55,7 +56,6 @@ const stored = (() => {
   }
 })()
 const TOKEN = typeof stored.token === 'string' && /^[a-f0-9]{24}$/.test(stored.token) ? stored.token : randomBytes(12).toString('hex')
-if (TOKEN !== stored.token) fs.writeFileSync(path.join(LOGS, 'notepad.json'), `${JSON.stringify({ token: TOKEN }, null, 2)}\n`, { mode: 0o600 })
 let hash = 0
 for (const ch of path.resolve(LOGS)) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0
 const STABLE_PORT = 47100 + (hash % 1000)
@@ -179,15 +179,23 @@ const sessionNames = () => Object.fromEntries(namedSessions().filter(s => s.name
 // Tells the mod (which reads this process's output) to refresh its pane.
 const changed = () => process.stdout.write('CHANGED\n')
 
-// Hands the mod a request for Claude (describe a component, read a board).
-const ask = request => process.stdout.write(`ASK ${JSON.stringify(request)}\n`)
+// Hands a session's mod a request for Claude (describe a component, read a
+// board, write the standup): a line in that session's inbox, which it reads.
+const isId = v => typeof v === 'string' && /^[\w-]{1,80}$/.test(v)
+const ask = (request, target) => {
+  if (!isId(target)) return process.stdout.write(`ASK ${JSON.stringify(request)}\n`)
+  fs.mkdirSync(path.join(LOGS, 'inbox'), { recursive: true })
+  fs.appendFileSync(path.join(LOGS, 'inbox', `${target}.jsonl`), `${JSON.stringify(request)}\n`)
+}
+// The session a request is for: the page's `s`, else the one that started us.
+const selfOf = url => (isId(url.searchParams.get('s')) ? url.searchParams.get('s') : SELF)
 
 const append = entry => {
   fs.appendFileSync(path.join(LOGS, `${dateKey(entry.ts)}.web.jsonl`), `${JSON.stringify(entry)}\n`)
   changed()
 }
 
-const state = date => {
+const state = (date, self) => {
   const now = Date.now()
   const today = dateKey(now)
   const days = recent()
@@ -205,7 +213,7 @@ const state = date => {
       count: days.find(x => x.date === d)?.entries.length ?? 0,
     })),
     day,
-    self: SELF,
+    self,
     project: PROJECT,
     sessions: namedSessions(),
     sessionCounts: days.flatMap(d => d.entries).filter(e => e.type !== 'done').reduce((acc, e) => ({ ...acc, [e.session ?? '']: (acc[e.session ?? ''] ?? 0) + 1 }), {}),
@@ -259,7 +267,7 @@ const standup = () => {
   return buildStandup({ title: g?.title ?? meta().title, since, now, days: recent(), graph: g, sessions: sessionNames() })
 }
 
-const addNote = ({ type, text, component }) => {
+const addNote = ({ type, text, component }, self) => {
   const kind = NOTE_TYPES.has(type) ? type : 'note'
   const tagged = resolveTag(graph(), String(text ?? '').slice(0, 2000))
   let body = tagged.text
@@ -277,7 +285,7 @@ const addNote = ({ type, text, component }) => {
     by: 'you',
     ...(component || tagged.component ? { component: component || tagged.component } : {}),
     ...(why ? { why } : {}),
-    ...(SELF ? { session: SELF } : {}),
+    ...(self ? { session: self } : {}),
   }
   append(entry)
   return entry
@@ -344,7 +352,9 @@ const server = http.createServer(async (req, res) => {
   const token = url.searchParams.get('t') ?? req.headers['x-notepad-token']
   if (token !== TOKEN) return send(res, 403, { error: 'missing or wrong token' })
 
+  const self = selfOf(url)
   try {
+    if (req.method === 'GET' && url.pathname === '/api/ping') return send(res, 200, { ok: true, project: PROJECT })
     if (req.method === 'GET' && url.pathname === '/') {
       return send(res, 200, readText(path.join(here, 'app.html')), 'text/html; charset=utf-8')
     }
@@ -355,7 +365,7 @@ const server = http.createServer(async (req, res) => {
       req.on('close', () => clients.delete(res))
       return
     }
-    if (req.method === 'GET' && url.pathname === '/api/state') return send(res, 200, state(url.searchParams.get('date')))
+    if (req.method === 'GET' && url.pathname === '/api/state') return send(res, 200, state(url.searchParams.get('date'), self))
     if (req.method === 'GET' && url.pathname === '/api/sessionlog') {
       // One session's whole history, newest day first.
       const id = url.searchParams.get('id') ?? ''
@@ -367,12 +377,12 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === 'GET' && url.pathname === '/api/search') return send(res, 200, search(url.searchParams.get('q') ?? ''))
     if (req.method === 'GET' && url.pathname === '/api/standup') {
-      return send(res, 200, { markdown: standup(), written: readJson(path.join(LOGS, 'standup-written.json'), null), last: Number(readJson(path.join(LOGS, 'standup.json'), {}).last ?? 0), hasSession: !!SELF })
+      return send(res, 200, { markdown: standup(), written: readJson(path.join(LOGS, 'standup-written.json'), null), last: Number(readJson(path.join(LOGS, 'standup.json'), {}).last ?? 0), hasSession: !!self })
     }
     if (req.method === 'GET' && url.pathname === '/live.svg') {
       return send(res, 200, readText(path.join(LOGS, 'live.svg')) || '<svg xmlns="http://www.w3.org/2000/svg"/>', 'image/svg+xml')
     }
-    if (req.method === 'POST' && url.pathname === '/api/note') return send(res, 200, addNote(await readBody(req)))
+    if (req.method === 'POST' && url.pathname === '/api/note') return send(res, 200, addNote(await readBody(req), self))
     if (req.method === 'GET' && url.pathname === '/api/component') {
       const found = await workspace.component(url.searchParams.get('id'))
       return found ? send(res, 200, found) : send(res, 404, { error: 'no such component' })
@@ -382,13 +392,13 @@ const server = http.createServer(async (req, res) => {
       const body = await readBody(req)
       // The mod builds the standup prompt itself, from the same journal.
       if (body.kind === 'standup') {
-        ask({ kind: 'standup', scope: body.scope === 'session' ? 'session' : 'all' })
+        ask({ kind: 'standup', scope: body.scope === 'session' ? 'session' : 'all' }, self)
         return send(res, 200, { ok: true })
       }
       if (body.kind !== 'describe' || typeof body.component !== 'string') return send(res, 400, { error: 'unknown request' })
       const found = await workspace.component(body.component)
       const missing = (found?.files ?? []).filter(f => !f.summary || f.isStale).map(f => f.path).slice(0, 40)
-      ask({ kind: 'describe', component: body.component, label: found?.node.label ?? body.component, files: missing })
+      ask({ kind: 'describe', component: body.component, label: found?.node.label ?? body.component, files: missing }, self)
       return send(res, 200, { ok: true, files: missing.length })
     }
     if (req.method === 'POST' && url.pathname === '/api/session') {
@@ -413,7 +423,7 @@ const server = http.createServer(async (req, res) => {
         items: body.items,
         underlay: !!body.underlay,
         // The session that started the board keeps it, whoever edits it later.
-        session: prev?.session ?? (typeof body.session === 'string' ? body.session : SELF),
+        session: prev?.session ?? (isId(body.session) ? body.session : self),
         updatedAt: Date.now(),
       }
       fs.writeFileSync(workspace.boardFile(body.id), JSON.stringify(board))
@@ -428,21 +438,22 @@ const server = http.createServer(async (req, res) => {
       const base = path.join(workspace.boardsDir, `${String(body.id ?? 'board').replace(/[^\w-]/g, '')}-${stamp}`)
       fs.writeFileSync(`${base}.png`, Buffer.from(png, 'base64'))
       fs.writeFileSync(`${base}.md`, String(body.md ?? ''))
+      const target = isId(body.target) ? body.target : self
       ask({
         kind: 'board',
         title: String(body.title ?? 'Board').slice(0, 120),
         png: `${base}.png`,
         md: String(body.md ?? '').slice(0, 60_000),
         note: String(body.note ?? '').slice(0, 4000),
-        target: typeof body.target === 'string' ? body.target : SELF,
-        targetName: sessionNames()[body.target] ?? undefined,
-      })
+        target,
+        targetName: sessionNames()[target] ?? undefined,
+      }, target)
       return send(res, 200, { ok: true, png: `${base}.png` })
     }
     if (req.method === 'POST' && url.pathname === '/api/done') {
       const { ref } = await readBody(req)
       if (typeof ref !== 'string') return send(res, 400, { error: 'ref is required' })
-      append({ id: newId(Date.now()), ts: Date.now(), type: 'done', ref, by: 'you', ...(SELF ? { session: SELF } : {}) })
+      append({ id: newId(Date.now()), ts: Date.now(), type: 'done', ref, by: 'you', ...(self ? { session: self } : {}) })
       return send(res, 200, { ok: true })
     }
     if (req.method === 'POST' && url.pathname === '/api/open') {
@@ -462,15 +473,15 @@ const server = http.createServer(async (req, res) => {
   }
 })
 
-// Another session on the project may hold the port already; then any free one.
+// Another session's server already serves the project: it is the notepad.
 server.on('error', err => {
-  if (err.code === 'EADDRINUSE' && server.listening === false && !server.triedFree) {
-    server.triedFree = true
-    server.listen(0, '127.0.0.1')
-  } else throw err
+  if (err.code !== 'EADDRINUSE') throw err
+  console.log('BUSY')
+  process.exit(3)
 })
 server.on('listening', () => {
   const { port } = server.address()
+  fs.writeFileSync(path.join(LOGS, 'notepad.json'), `${JSON.stringify({ token: TOKEN, port }, null, 2)}\n`, { mode: 0o600 })
   console.log(`NOTEPAD http://127.0.0.1:${port}/?t=${TOKEN}`)
 })
 server.listen(STABLE_PORT, '127.0.0.1')

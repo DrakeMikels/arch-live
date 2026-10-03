@@ -367,8 +367,12 @@ const applyUpdate = (prev: ArchGraph | null, args: UpdateArgs, now: number) => {
 }
 
 // Rewrites the browser view; only once the person has opened it, unless `force`.
+// The read-only browser view lives with the journal, not in the repo: a file
+// written into the mod's own folder would reload the mod in every session.
+const popoutFile = async ($: EngineInterface) => `${await logsDir($)}/architecture.html`
+
 const writePopout = async ($: EngineInterface, graph: ArchGraph | null, theme: ArchTheme, force = false) => {
-  const file = inRoot(await currentRoot($), POPOUT_FILE)
+  const file = await popoutFile($)
   if (!force && !(await $.fs.exists(file))) return
   await $.fs.write(file, popoutHtml(renderSvg(graph, theme), theme))
 }
@@ -399,6 +403,10 @@ const startNotepad = async ($: EngineInterface): Promise<string | undefined> => 
         try {
           for await (const chunk of $.process.spawn({ argv: [node, ...argv] })) {
             if (chunk.stream === 'stderr' && !isResolved) stderr += chunk.text
+            if (chunk.text.includes('BUSY') && !isResolved) {
+              isResolved = true
+              resolve(undefined)
+            }
             const found = /NOTEPAD (http:\/\/127\.0\.0\.1:\d+\/\?t=[a-f0-9]+)/.exec(chunk.text)
             if (found && !isResolved) {
               isResolved = true
@@ -414,7 +422,7 @@ const startNotepad = async ($: EngineInterface): Promise<string | undefined> => 
         } catch {
           // This node could not start; the next is tried.
         }
-        if (!isResolved) {
+        if (!isResolved || stderr.includes('BUSY')) {
           // Node ran but the server failed: keep its first error line.
           const line = stderr.split('\n').map(l => l.trim()).find(l => /error|denied|not permitted|cannot/i.test(l))
           if (line) reasons.push(line.slice(0, 160))
@@ -470,25 +478,75 @@ const handleAsk = async ($: EngineInterface, json: string) => {
   }
 }
 
+// The project's notepad, if one answers: any session's server serves every
+// session on the project, at the address kept in logs/<project>/notepad.json.
+const liveNotepad = async ($: EngineInterface): Promise<string | undefined> => {
+  const info = parseJson(await $.fs.read(`${await logsDir($)}/notepad.json`).catch(() => '')) as { token?: string; port?: number } | undefined
+  if (!info?.token || !info.port) return undefined
+  const base = `http://127.0.0.1:${info.port}`
+  const ping = $.http.fetch(`${base}/api/ping?t=${info.token}`).then(r => r.ok, () => false)
+  const isUp = await Promise.race([ping, new Promise<boolean>(resolve => $.clock.after(1500, () => resolve(false)))])
+  return isUp ? `${base}/?t=${info.token}` : undefined
+}
+
+// The running notepad, else one this session starts; if another session wins
+// the start, its server is the notepad.
 const ensureNotepad = async ($: EngineInterface): Promise<string | undefined> => {
-  const running = (await $.state.get({ plugin: 'arch-live', key: 'notepad' })).value
-  if (running) return running
+  const live = await liveNotepad($)
+  if (live) return live
   notepadStarting ??= startNotepad($).finally(() => {
     notepadStarting = undefined
   })
-  return notepadStarting
+  return (await notepadStarting) ?? (await liveNotepad($))
+}
+
+// Runs for the module's life (a reload starts a fresh one): reads this
+// session's inbox from the notepad, refreshes the pane when a notepad changes
+// the journal, and takes over the notepad when the session serving it goes.
+let booted = false
+let journalSig = ''
+let ticks = 0
+const boot = ($: EngineInterface) => {
+  if (booted) return
+  booted = true
+  $.clock.every(2000, () => {
+    void tick($).catch(() => undefined)
+  })
+}
+const tick = async ($: EngineInterface) => {
+  ticks += 1
+  const dir = await logsDir($)
+  const inbox = `${dir}/inbox/${await $.session.id()}.jsonl`
+  const asks = await $.fs.read(inbox).catch(() => '')
+  if (asks.trim()) {
+    await $.fs.write(inbox, '')
+    for (const line of asks.split('\n')) if (line.trim()) await handleAsk($, line).catch(() => undefined)
+  }
+  const today = dateKey(await $.clock.now())
+  const stamps = await Promise.all(
+    [`${today}.json`, `${today}.web.jsonl`, 'standup.json', 'standup-written.json'].map(f =>
+      $.fs.stat(`${dir}/${f}`).then(st => st.mtimeMs, () => 0),
+    ),
+  )
+  const sig = `${today}|${stamps.join(',')}`
+  if (sig !== journalSig) {
+    const isFirst = journalSig === ''
+    journalSig = sig
+    if (!isFirst) await refreshJournal($)
+  }
+  if (ticks % 5 === 1 && (await read($, graphAtom))) await ensureNotepad($)
 }
 
 const openPopout = async ($: EngineInterface) => {
   try {
     const url = await ensureNotepad($)
     if (url) {
-      await $.process.run(['open', url])
+      await $.process.run(['open', `${url}&s=${encodeURIComponent(await $.session.id())}`])
       return
     }
     const graph = (await $.state.get({ plugin: 'arch-live', key: 'graph' })).value ?? null
     await writePopout($, graph, await currentTheme($), true)
-    const file = inRoot(await currentRoot($), POPOUT_FILE)
+    const file = await popoutFile($)
     const ran = await $.process.run(['open', file])
     if (ran.exitCode !== 0) $.ui.toast(`arch-live: could not open the browser view (${ran.stderr.trim() || ran.exitCode})`)
     else $.ui.toast(`arch-live: the notepad server did not start (${notepadError ?? 'Node was not found'}), so the browser view is read-only`)
@@ -902,7 +960,7 @@ const runCommand = async ($: EngineInterface, command: string, args: string): Pr
       return runStandup($)
     case 'notepad': {
       await openPopout($)
-      const url = (await $.state.get({ plugin: 'arch-live', key: 'notepad' })).value
+      const url = await liveNotepad($)
       return url ? 'Notepad opened in your browser.' : `Opened the read-only browser view: the notepad server did not start (${notepadError ?? 'Node was not found'}).`
     }
     case 'done': {
@@ -1125,6 +1183,7 @@ export const register: Register = on => {
     await changeSession($, ({ endedAt: _ended, ...open }) => open).catch(() => undefined)
     await refreshJournal($).catch(() => undefined)
     // A mapped project's notepad is up while a session is, so an open tab reconnects.
+    boot($)
     if (graph) void ensureNotepad($).catch(() => undefined)
     // A session left open past midnight moves its Journal to the new day.
     let shownDay = dateKey(await $.clock.now())
@@ -1226,6 +1285,7 @@ export const register: Register = on => {
 
   // The journal: each main-thread turn becomes one entry when it completes.
   on('prompt.submit', async ($, e, next) => {
+    boot($)
     const pending = await read($, pendingAtom)
     const isTyped = e.text.trim() !== '' && !e.text.trim().startsWith('/')
     const result = await next(pending && isTyped ? { ...e, context: [...(e.context ?? []), pending] } : e)
@@ -1248,6 +1308,7 @@ export const register: Register = on => {
   })
 
   on('turn.complete', async ($, e, next) => {
+    boot($)
     const result = await next(e)
     const done = turn
     if (!e.agentId && done) {
@@ -1348,6 +1409,7 @@ export const register: Register = on => {
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
+    boot($)
     const graph = await read($, graphAtom)
     const theme = (await read($, themeAtom)) ?? DEFAULT_THEME
     const tab = await read($, tabAtom)

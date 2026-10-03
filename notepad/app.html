@@ -309,9 +309,11 @@
 <div class="toast" id="toast"></div>
 <script>
 const token = new URLSearchParams(location.search).get('t')
+// The session this page is for (each session's Open notepad adds it).
+const forSession = new URLSearchParams(location.search).get('s') ?? ''
 const $ = s => document.querySelector(s)
 const api = (p, body) =>
-  fetch(`${p}${p.includes('?') ? '&' : '?'}t=${token}`, body ? { method: 'POST', headers: { 'content-type': 'application/json', 'x-notepad-token': token }, body: JSON.stringify(body) } : {}).then(r => r.json())
+  fetch(`${p}${p.includes('?') ? '&' : '?'}t=${token}${forSession ? `&s=${encodeURIComponent(forSession)}` : ''}`, body ? { method: 'POST', headers: { 'content-type': 'application/json', 'x-notepad-token': token }, body: JSON.stringify(body) } : {}).then(r => r.json())
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c])
 const inline = s => esc(s)
   .replace(/`([^`]+)`/g, '<code>$1</code>')
