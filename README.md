@@ -7,6 +7,12 @@ A Claude Code mod that keeps a live picture of the system you are building and a
 - **Standup.** `/standup` builds a brief since the last one and copies it for Slack.
 - **Notepad.** `/notepad` opens a browser app for a second monitor: journal, component drawer (files, functions, summaries), whiteboard with Send to Claude, and the standup.
 
+## Architecture
+
+![Architecture](docs/architecture.svg)
+
+The mod hooks are the hub: Claude Code calls them, they draw the pane, write the map and journal, and start the notepad server that the browser app talks to. Run `/arch-export` to redraw this picture after the map changes.
+
 ## Layout
 
 | Part | Files |
