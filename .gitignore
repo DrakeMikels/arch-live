@@ -1,0 +1,6 @@
+# Written by Claude Code when it loads the mod
+.claude-plugin/types/
+# Browser view written by the mod
+.claude/architecture.html
+node_modules/
+.DS_Store

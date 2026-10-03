@@ -1,0 +1,232 @@
+{
+  "version": 1,
+  "title": "arch-live",
+  "nodes": [
+    {
+      "id": "claude-code",
+      "label": "Claude Code",
+      "kind": "external",
+      "sublabel": "hooks \u00b7 tools \u00b7 prompts",
+      "order": 0
+    },
+    {
+      "id": "pane",
+      "label": "Claude Code pane",
+      "kind": "client",
+      "sublabel": "Pane \u00b7 band \u00b7 /commands",
+      "path": "hooks/register.tsx",
+      "line": 1138,
+      "order": 1
+    },
+    {
+      "id": "browser",
+      "label": "Browser notepad",
+      "kind": "client",
+      "sublabel": "Journal \u00b7 Diagram \u00b7 Board \u00b7 Standup",
+      "path": "notepad/app.html",
+      "line": 247,
+      "owns": [
+        "notepad/app.html"
+      ],
+      "files": {
+        "notepad/app.html": {
+          "summary": "Single-file browser app: journal, component drawer, whiteboard and standup.",
+          "at": 1791040747004
+        }
+      },
+      "order": 2
+    },
+    {
+      "id": "mod-hooks",
+      "label": "Mod hooks",
+      "kind": "service",
+      "sublabel": "register.tsx \u00b7 tools \u00b7 capture",
+      "path": "hooks/register.tsx",
+      "line": 843,
+      "owns": [
+        "hooks/register.tsx",
+        "types",
+        ".claude-plugin"
+      ],
+      "files": {
+        "hooks/register.tsx": {
+          "summary": "Every hook: map tools, journal capture, commands, pane and band drawing.",
+          "at": 1791040747004
+        },
+        "types/index.d.ts": {
+          "summary": "Shared types and the mod's $.state contract.",
+          "at": 1791040747004
+        },
+        ".claude-plugin/plugin.json": {
+          "summary": "Plugin manifest: name, version and type contract.",
+          "at": 1791040747004
+        }
+      },
+      "order": 3
+    },
+    {
+      "id": "renderer",
+      "label": "Diagram renderer",
+      "kind": "service",
+      "sublabel": "layout \u00b7 SVG \u00b7 themes",
+      "path": "hooks/render.ts",
+      "line": 400,
+      "owns": [
+        "hooks/render.ts",
+        "hooks/theme.ts"
+      ],
+      "files": {
+        "hooks/render.ts": {
+          "summary": "Lays out tiers and draws the editorial SVG, marks and active dots.",
+          "at": 1791040747004
+        },
+        "hooks/theme.ts": {
+          "summary": "Default design tokens, theme normalising and contrast warnings.",
+          "at": 1791040747004
+        }
+      },
+      "order": 4
+    },
+    {
+      "id": "journal",
+      "label": "Journal & STE",
+      "kind": "service",
+      "sublabel": "turns \u00b7 notes \u00b7 standup",
+      "path": "hooks/journal.ts",
+      "line": 178,
+      "owns": [
+        "hooks/journal.ts",
+        "hooks/ste.ts"
+      ],
+      "files": {
+        "hooks/journal.ts": {
+          "summary": "Day files, done events, carry-forward and the standup brief.",
+          "at": 1791040747004
+        },
+        "hooks/ste.ts": {
+          "summary": "Simplified Technical English distiller for turn summaries.",
+          "at": 1791040747004
+        }
+      },
+      "order": 5
+    },
+    {
+      "id": "notepad-server",
+      "label": "Notepad server",
+      "kind": "service",
+      "sublabel": "Node \u00b7 127.0.0.1 \u00b7 SSE",
+      "path": "notepad/server.mjs",
+      "line": 209,
+      "owns": [
+        "notepad/server.mjs",
+        "notepad/workspace.mjs"
+      ],
+      "files": {
+        "notepad/server.mjs": {
+          "summary": "Local token-guarded server for the notepad's API, live events and asks.",
+          "at": 1791040747004
+        },
+        "notepad/workspace.mjs": {
+          "summary": "Component file trees from git, symbol outlines and saved boards.",
+          "at": 1791040747004
+        }
+      },
+      "order": 6
+    },
+    {
+      "id": "project-map",
+      "label": "Project map",
+      "kind": "store",
+      "sublabel": ".claude/architecture.json",
+      "order": 7
+    },
+    {
+      "id": "journal-files",
+      "label": "Journal files",
+      "kind": "store",
+      "sublabel": "~/.claude/arch-live/logs",
+      "order": 8
+    },
+    {
+      "id": "editor",
+      "label": "Cursor / VS Code",
+      "kind": "external",
+      "sublabel": "code -g file:line",
+      "order": 9
+    }
+  ],
+  "edges": [
+    {
+      "from": "claude-code",
+      "to": "mod-hooks",
+      "label": "hooks"
+    },
+    {
+      "from": "mod-hooks",
+      "to": "pane",
+      "label": "ui.render"
+    },
+    {
+      "from": "mod-hooks",
+      "to": "renderer"
+    },
+    {
+      "from": "mod-hooks",
+      "to": "journal",
+      "label": "log turns"
+    },
+    {
+      "from": "mod-hooks",
+      "to": "project-map",
+      "label": "arch_update"
+    },
+    {
+      "from": "journal",
+      "to": "journal-files",
+      "label": "day files"
+    },
+    {
+      "from": "mod-hooks",
+      "to": "notepad-server",
+      "label": "spawn"
+    },
+    {
+      "from": "notepad-server",
+      "to": "mod-hooks",
+      "label": "CHANGED \u00b7 ASK",
+      "style": "async"
+    },
+    {
+      "from": "browser",
+      "to": "notepad-server",
+      "label": "REST + SSE",
+      "style": "http"
+    },
+    {
+      "from": "notepad-server",
+      "to": "journal-files",
+      "label": "read \u00b7 append"
+    },
+    {
+      "from": "notepad-server",
+      "to": "project-map",
+      "label": "read"
+    },
+    {
+      "from": "notepad-server",
+      "to": "editor",
+      "label": "code -g"
+    },
+    {
+      "from": "mod-hooks",
+      "to": "claude-code",
+      "label": "prompt.submit",
+      "style": "async"
+    }
+  ],
+  "focus": [
+    "mod-hooks",
+    "notepad-server"
+  ],
+  "updatedAt": 1791040747004
+}
