@@ -822,16 +822,75 @@ const lastStandup = async ($: EngineInterface): Promise<number> => {
   return Number((await $.store.get(`standup:${projectKey(await projectPath($))}`)) ?? 0)
 }
 
-const markStandupGiven = async ($: EngineInterface) =>
-  $.fs.write(await standupFile($), `${JSON.stringify({ last: await $.clock.now() })}\n`)
+type StandupDraft = { markdown: string; scope?: string; at: number }
+type StandupRecord = {
+  id: string
+  at: number
+  since: number
+  until: number
+  title: string
+  scope: string
+  written: string | null
+  writtenAt: number | null
+  drafts: StandupDraft[]
+  brief: string
+}
+
+// Claude's write-ups since the last archive, oldest first; each one is added,
+// never replacing the last (standup-written.json is the older single file).
+const writtenFile = async ($: EngineInterface) => `${await logsDir($)}/standup-written.json`
+const draftsFile = async ($: EngineInterface) => `${await logsDir($)}/standup-drafts.json`
+const readDrafts = async ($: EngineInterface): Promise<StandupDraft[]> => {
+  const list = (parseJson(await $.fs.read(await draftsFile($)).catch(() => '')) as { drafts?: StandupDraft[] } | undefined)?.drafts ?? []
+  const legacy = parseJson(await $.fs.read(await writtenFile($)).catch(() => '')) as StandupDraft | undefined
+  const all = legacy?.markdown && !list.some(d => d.at === legacy.at) ? [...list, legacy] : list
+  const last = await lastStandup($)
+  return all.filter(d => d?.markdown && d.at >= last).sort((a, b) => a.at - b.at)
+}
+
+const archivedStandups = async ($: EngineInterface): Promise<StandupRecord[]> => {
+  const dir = `${await logsDir($)}/standups`
+  const files = (await $.fs.list(dir).catch(() => [])).filter(f => f.name.endsWith('.json'))
+  const all = await Promise.all(files.map(async f => parseJson(await $.fs.read(`${dir}/${f.name}`).catch(() => '')) as StandupRecord | undefined))
+  return all.filter((a): a is StandupRecord => !!a?.id).sort((a, b) => b.at - a.at)
+}
+
+// Archive & start fresh: the window's latest write-up, earlier drafts and the
+// journal brief are saved first; only then does the window move, so a failed
+// save leaves everything as it was.
+const markStandupGiven = async ($: EngineInterface): Promise<StandupRecord> => {
+  const now = await $.clock.now()
+  const since = await standupSince($, now)
+  const list = await readDrafts($)
+  const latest = list[list.length - 1]
+  const d = new Date(now)
+  const two = (n: number) => String(n).padStart(2, '0')
+  const id = `${dateKey(now)}-${two(d.getHours())}${two(d.getMinutes())}${two(d.getSeconds())}`
+  const graph = (await $.state.get({ plugin: 'arch-live', key: 'graph' })).value ?? null
+  const record: StandupRecord = {
+    id,
+    at: now,
+    since,
+    until: now,
+    title: graph?.title ?? (await projectPath($)).split('/').pop() ?? 'Project',
+    scope: latest?.scope ?? 'all sessions',
+    written: latest?.markdown ?? null,
+    writtenAt: latest?.at ?? null,
+    drafts: list.slice(0, -1),
+    brief: await standupText($),
+  }
+  await $.fs.write(`${await logsDir($)}/standups/${id}.json`, `${JSON.stringify(plain(record), null, 2)}\n`)
+  await $.fs.write(await standupFile($), `${JSON.stringify({ last: now })}\n`)
+  await $.fs.write(await draftsFile($), `${JSON.stringify({ drafts: [] })}\n`)
+  if (await $.fs.exists(await writtenFile($))) await $.fs.write(await writtenFile($), '{}\n')
+  return record
+}
 
 const standupSince = async ($: EngineInterface, now: number) => {
   const last = await lastStandup($)
   return last > now - 14 * DAY_MS ? last : now - DAY_MS
 }
 
-// Claude's write-up of the standup, shown above the journal brief.
-const writtenFile = async ($: EngineInterface) => `${await logsDir($)}/standup-written.json`
 
 const standupPrompt = (scope: string, since: number, brief: string, detail: string) =>
   [
@@ -926,12 +985,11 @@ const addNote = async ($: EngineInterface, type: JournalNoteType, raw: string, b
 
 const runStandup = async ($: EngineInterface): Promise<string> => {
   const now = await $.clock.now()
-  const brief = await standupText($)
-  const file = `${await logsDir($)}/standup-${dateKey(now)}.md`
-  await $.fs.write(file, `${brief}\n`)
-  await markStandupGiven($)
-  const isCopied = await copyText($, brief)
-  return `${brief}\n\n_${isCopied ? 'Copied to the clipboard. ' : ''}Saved to ${file}_`
+  const drafts = await readDrafts($)
+  const text = drafts[drafts.length - 1]?.markdown ?? (await standupText($))
+  const isCopied = await copyText($, text)
+  const record = await markStandupGiven($)
+  return `${text}\n\n_${isCopied ? 'Copied to the clipboard. ' : ''}Archived as ${record.id} (${dayLabel(now)}); the next standup starts from now._`
 }
 
 const runCommand = async ($: EngineInterface, command: string, args: string): Promise<string> => {
@@ -1357,8 +1415,9 @@ export const register: Register = on => {
     const markdown = String(args.markdown ?? '').trim()
     if (!markdown) return { result: 'Nothing to save: pass the standup as markdown.' }
     const now = await $.clock.now()
-    const saved = { markdown: markdown.slice(0, 20_000), scope: String(args.scope ?? 'all sessions').slice(0, 120), at: now, since: await standupSince($, now) }
-    await $.fs.write(await writtenFile($), `${JSON.stringify(saved, null, 2)}\n`)
+    const saved: StandupDraft = { markdown: markdown.slice(0, 20_000), scope: String(args.scope ?? 'all sessions').slice(0, 120), at: now }
+    const kept = (parseJson(await $.fs.read(await draftsFile($)).catch(() => '')) as { drafts?: StandupDraft[] } | undefined)?.drafts ?? []
+    await $.fs.write(await draftsFile($), `${JSON.stringify(plain({ drafts: [...kept, saved].slice(-20) }), null, 2)}\n`)
     await refreshJournal($).catch(() => undefined)
     return { result: "Saved. It is on the notepad's Standup tab and in the pane's Standup tab." }
   })
@@ -1444,8 +1503,10 @@ export const register: Register = on => {
 
     if (tab === 'standup') {
       const brief = await standupText($)
-      const written = parseJson(await $.fs.read(await writtenFile($)).catch(() => '')) as { markdown?: string; scope?: string; at?: number } | undefined
+      const drafts = await readDrafts($)
+      const written = drafts[drafts.length - 1]
       const shown = written?.markdown ? written.markdown : brief
+      const past = (await archivedStandups($)).slice(0, 3)
       return (
         <Box flexDirection="column" gap={1}>
           {tabs}
@@ -1458,11 +1519,15 @@ export const register: Register = on => {
             />
             <Button
               key="standup-given"
-              label="Start fresh from now"
+              label="Archive & start fresh"
               onPress={async () => {
-                await markStandupGiven($)
-                await refreshJournal($)
-                $.ui.toast('Started fresh: your next standup covers only what happens from now')
+                try {
+                  const record = await markStandupGiven($)
+                  await refreshJournal($)
+                  $.ui.toast(`Archived (${dayLabel(record.at)} ${timeLabel(record.at)}); the next standup starts from now`)
+                } catch (err) {
+                  $.ui.toast(`arch-live: could not archive, so nothing was reset (${errorText(err)})`)
+                }
               }}
             />
           </Box>
@@ -1470,6 +1535,15 @@ export const register: Register = on => {
             <Text key="standup-written" dimColor>{`Written by Claude · ${written.scope ?? 'all sessions'} · ${dayLabel(written.at ?? 0)} ${timeLabel(written.at ?? 0)}`}</Text>
           ) : null}
           <Markdown text={shown} />
+          {past.length ? <Text key="standup-past-title" dimColor>{'Past standups (all in the notepad\'s History)'}</Text> : null}
+          {past.map(a => (
+            <Button
+              key={`standup-past-${a.id}`}
+              label={`${dayLabel(a.at)} ${timeLabel(a.at)} · ${a.scope} · Copy`}
+              dimColor
+              onPress={async () => $.ui.toast((await copyText($, a.written ?? a.brief)) ? 'Past standup copied' : 'arch-live: could not copy')}
+            />
+          ))}
         </Box>
       )
     }

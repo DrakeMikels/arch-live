@@ -254,17 +254,84 @@ const search = q => {
       })
     }
   }
+  for (const a of archived()) {
+    const text = [a.written ?? '', a.brief ?? '', a.scope ?? '', ...(a.drafts ?? []).map(d => d.markdown)].join('\n')
+    if (!words.every(w => text.toLowerCase().includes(w))) continue
+    const line = text.split('\n').find(l => words.some(w => l.toLowerCase().includes(w))) ?? ''
+    hits.push({ date: dateKey(a.at), id: a.id, ts: a.at, type: 'standup', title: `Standup · ${a.scope}`, detail: line.replace(/^[#\-*\s]+/, ''), session: null, done: false })
+  }
+  hits.sort((x, y) => y.ts - x.ts)
   return { hits: hits.slice(0, 150), total: hits.length }
 }
 
 const workspace = createWorkspace({ project: PROJECT, logs: LOGS, graph, recent })
 
+// The standup window: since the last one was archived (at most two weeks),
+// else the last day.
+const lastGiven = () => Number(readJson(path.join(LOGS, 'standup.json'), {}).last ?? 0)
+const standupSince = now => (lastGiven() > now - 14 * DAY_MS ? lastGiven() : now - DAY_MS)
+const projectTitle = () => graph()?.title ?? meta().title
+
 const standup = () => {
   const now = Date.now()
-  const last = Number(readJson(path.join(LOGS, 'standup.json'), {}).last ?? 0)
-  const since = last > now - 14 * DAY_MS ? last : now - DAY_MS
   const g = graph()
-  return buildStandup({ title: g?.title ?? meta().title, since, now, days: recent(), graph: g, sessions: sessionNames() })
+  return buildStandup({ title: projectTitle(), since: standupSince(now), now, days: recent(), graph: g, sessions: sessionNames() })
+}
+
+// Claude's write-ups since the last archive, oldest first. Each new one is
+// added, never replacing the last (standup-written.json is the older single file).
+const DRAFTS = path.join(LOGS, 'standup-drafts.json')
+const LEGACY_DRAFT = path.join(LOGS, 'standup-written.json')
+const drafts = () => {
+  const list = readJson(DRAFTS, { drafts: [] }).drafts ?? []
+  const legacy = readJson(LEGACY_DRAFT, null)
+  const all = legacy?.markdown && !list.some(d => d.at === legacy.at) ? [...list, legacy] : list
+  return all.filter(d => d?.markdown && d.at >= lastGiven()).sort((a, b) => a.at - b.at)
+}
+
+// Archived standups, one file each in standups/, newest first.
+const STANDUPS = path.join(LOGS, 'standups')
+const archived = () => {
+  let names = []
+  try {
+    names = fs.readdirSync(STANDUPS).filter(n => n.endsWith('.json'))
+  } catch {
+    return []
+  }
+  return names.map(n => readJson(path.join(STANDUPS, n), null)).filter(a => a?.id).sort((a, b) => b.at - a.at)
+}
+
+// Archive & start fresh: the window's latest write-up (and earlier drafts)
+// and the journal brief are saved first; only then does the window move. A
+// failed save leaves everything as it was.
+const archiveStandup = () => {
+  const now = Date.now()
+  const since = standupSince(now)
+  const list = drafts()
+  const latest = list[list.length - 1]
+  const d = new Date(now)
+  const pad = n => String(n).padStart(2, '0')
+  const id = `${dateKey(now)}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`
+  const record = {
+    id,
+    at: now,
+    since,
+    until: now,
+    title: projectTitle(),
+    scope: latest?.scope ?? 'all sessions',
+    written: latest?.markdown ?? null,
+    writtenAt: latest?.at ?? null,
+    drafts: list.slice(0, -1).map(x => ({ markdown: x.markdown, scope: x.scope, at: x.at })),
+    brief: standup(),
+  }
+  fs.mkdirSync(STANDUPS, { recursive: true })
+  const file = path.join(STANDUPS, `${id}.json`)
+  fs.writeFileSync(`${file}.tmp`, `${JSON.stringify(record, null, 2)}\n`)
+  fs.renameSync(`${file}.tmp`, file)
+  fs.writeFileSync(path.join(LOGS, 'standup.json'), `${JSON.stringify({ last: now }, null, 2)}\n`)
+  fs.writeFileSync(DRAFTS, `${JSON.stringify({ drafts: [] }, null, 2)}\n`)
+  if (fs.existsSync(LEGACY_DRAFT)) fs.unlinkSync(LEGACY_DRAFT)
+  return record
 }
 
 const addNote = ({ type, text, component }, self) => {
@@ -376,8 +443,25 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, { id, days })
     }
     if (req.method === 'GET' && url.pathname === '/api/search') return send(res, 200, search(url.searchParams.get('q') ?? ''))
+    if (req.method === 'GET' && url.pathname === '/api/standups') {
+      return send(res, 200, {
+        standups: archived().map(a => ({ id: a.id, at: a.at, since: a.since, until: a.until, scope: a.scope, hasWritten: !!a.written, drafts: a.drafts?.length ?? 0 })),
+      })
+    }
+    if (req.method === 'GET' && url.pathname === '/api/standups/one') {
+      const found = archived().find(a => a.id === url.searchParams.get('id'))
+      return found ? send(res, 200, found) : send(res, 404, { error: 'no such standup' })
+    }
     if (req.method === 'GET' && url.pathname === '/api/standup') {
-      return send(res, 200, { markdown: standup(), written: readJson(path.join(LOGS, 'standup-written.json'), null), last: Number(readJson(path.join(LOGS, 'standup.json'), {}).last ?? 0), hasSession: !!self })
+      const list = drafts()
+      return send(res, 200, {
+        markdown: standup(),
+        written: list[list.length - 1] ?? null,
+        drafts: list.slice(0, -1).reverse(),
+        since: standupSince(Date.now()),
+        archivedCount: archived().length,
+        hasSession: !!self,
+      })
     }
     if (req.method === 'GET' && url.pathname === '/live.svg') {
       return send(res, 200, readText(path.join(LOGS, 'live.svg')) || '<svg xmlns="http://www.w3.org/2000/svg"/>', 'image/svg+xml')
@@ -491,10 +575,15 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, { ok: await openCode(file, line) })
     }
     if (req.method === 'POST' && url.pathname === '/api/standup/given') {
-      fs.writeFileSync(path.join(LOGS, 'standup.json'), `${JSON.stringify({ last: Date.now() })}\n`)
+      let record
+      try {
+        record = archiveStandup()
+      } catch (err) {
+        return send(res, 500, { error: `Could not archive, so nothing was reset: ${err?.message ?? err}` })
+      }
       changed()
       broadcast()
-      return send(res, 200, { ok: true })
+      return send(res, 200, { ok: true, id: record.id })
     }
     return send(res, 404, { error: 'not found' })
   } catch (err) {
