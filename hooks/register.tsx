@@ -529,6 +529,8 @@ const startMap = async ($: EngineInterface, folder: string) => {
   await update($, rootAtom, () => root)
   await update($, askAtom, () => null)
   submitSoon($, mapPrompt(root))
+  // The prompt waits while Claude is busy; say so, or the button looks dead.
+  $.ui.toast(`arch-live: asked Claude to map ${root || 'this project'}; it starts when Claude is free`)
   void openPane($)
 }
 
@@ -543,6 +545,7 @@ const startBrand = ($: EngineInterface, url: string) => {
   const clean = href.replace(/[?#].*$/, '')
   void update($, askAtom, () => null)
   submitSoon($, brandPrompt(clean))
+  $.ui.toast(`arch-live: asked Claude to read ${clean.replace(/^https?:\/\//, '')}; it starts when Claude is free`)
 }
 
 const exportSvg = async ($: EngineInterface): Promise<string> => {
