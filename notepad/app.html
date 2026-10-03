@@ -17,9 +17,26 @@
   button, input, textarea, select { font: inherit; color: inherit; }
   code { font: inherit; background: var(--paper2); padding: 0 4px; border-radius: 3px; }
 
-  .app { display: grid; grid-template-columns: 200px 1fr; grid-template-rows: auto 1fr; height: 100vh; }
+  .app { display: grid; grid-template-columns: var(--nav-w, 200px) 6px 1fr; grid-template-rows: auto 1fr; height: 100vh; }
+  .app > nav { grid-column: 1; }
+  .app > .gutter { grid-column: 2; }
+  .app > main { grid-column: 3; }
+  .app.navless { grid-template-columns: 0 6px 1fr; }
+  .app.navless > nav { visibility: hidden; padding: 0; border: 0; }
   .app.wide { grid-template-columns: 1fr; }
-  .app.wide nav { display: none; }
+  .app.wide > nav, .app.wide > .gutter { display: none; }
+  .app.wide > main { grid-column: 1; }
+  /* Dividers: drag to resize, the button (or \\ for the days) hides the pane. */
+  .gutter { position: relative; flex: none; width: 6px; cursor: col-resize; touch-action: none; }
+  .gutter::after { content: ''; position: absolute; top: 0; bottom: 0; left: 2px; width: 2px; background: transparent; transition: background .15s; }
+  .gutter:hover::after, .gutter.dragging::after { background: var(--accent); }
+  .gutter button { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 16px; height: 34px; padding: 0; border: 1px solid var(--rule); border-radius: 6px; background: var(--nodeFill); color: var(--muted); font-size: 10px; cursor: pointer; opacity: .45; z-index: 2; }
+  .gutter:hover button, .gutter.closed button { opacity: 1; }
+  .gutter button:hover { color: var(--ink); border-color: var(--muted); }
+  body.dragging-pane, body.dragging-pane * { cursor: col-resize !important; user-select: none !important; }
+  .view[data-view="diagram"] .gutter { display: none; }
+  .view[data-view="diagram"]:has(.drawer.on) .gutter { display: block; }
+  body.railless .rail { display: none; }
   header { grid-column: 1 / -1; display: flex; align-items: center; gap: 16px; padding: 10px 18px; border-bottom: 1px solid var(--rule); }
   header h1 { font-size: 14px; font-weight: 600; margin: 0; letter-spacing: .01em; }
   .live { display: inline-flex; align-items: center; gap: 6px; color: var(--soft); font-size: 11px; }
@@ -81,18 +98,18 @@
   .check:checked { background: var(--accent); border-color: var(--accent); }
   .why { color: var(--muted); }
   .empty { color: var(--soft); padding: 30px 0; }
-  .rail { width: 300px; flex: none; border-left: 1px solid var(--rule); overflow-y: auto; padding: 16px 14px; }
+  .rail { width: var(--rail-w, 300px); flex: none; border-left: 1px solid var(--rule); overflow-y: auto; padding: 16px 14px; }
   .rail section { margin-bottom: 22px; }
   .rail .item { padding: 5px 4px; display: flex; gap: 4px; align-items: flex-start; }
   .rail .item small { color: var(--soft); display: block; }
-  @media (max-width: 1100px) { .rail { display: none; } }
+  @media (max-width: 1100px) { .rail, .view[data-view="journal"] > .gutter { display: none; } }
 
   /* Diagram + drawer */
   .diagram { flex: 1; overflow: auto; padding: 16px; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
   .diagram .svg { flex: 1; display: flex; align-items: flex-start; justify-content: center; }
   .diagram svg { max-width: 100%; height: auto; }
   .diagram g[data-id]:hover rect { stroke-width: 2; }
-  .drawer { width: 460px; flex: none; border-left: 1px solid var(--rule); overflow-y: auto; padding: 16px 16px 60px; display: none; background: var(--paper); }
+  .drawer { width: var(--drawer-w, 460px); flex: none; border-left: 1px solid var(--rule); overflow-y: auto; padding: 16px 16px 60px; display: none; background: var(--paper); }
   .drawer.on { display: block; }
   .drawer .eyebrow { font-size: 10px; letter-spacing: .18em; text-transform: uppercase; color: var(--accent); }
   .drawer h2 { margin: 2px 0 0; font-size: 18px; }
@@ -164,7 +181,7 @@
   .btn.accent { background: var(--accent); color: #fff; border-color: var(--accent); }
   .toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--ink); color: var(--paper); padding: 6px 14px; border-radius: 8px; opacity: 0; transition: opacity .2s; pointer-events: none; z-index: 30; }
   .toast.on { opacity: 1; }
-  @media (max-width: 720px) { .app { grid-template-columns: 1fr; } nav { display: none; } .drawer { width: 100%; } }
+  @media (max-width: 720px) { .app { grid-template-columns: 1fr; } .app > nav, .app > .gutter, .view .gutter { display: none; } .app > main { grid-column: 1; } .drawer { width: 100%; } }
 </style>
 <!-- After the defaults, so the saved theme wins. -->
 <style id="theme"></style>
@@ -183,6 +200,7 @@
     <button class="mode" id="mode" title="Light, dark, or follow the system">◐ Auto</button>
   </header>
   <nav><h2>Days</h2><div id="days"></div></nav>
+  <div class="gutter" data-pane="nav"><button data-collapse="nav" title="Hide days (\)">‹</button></div>
   <main>
     <section class="view on" data-view="journal">
       <div class="journal">
@@ -200,6 +218,7 @@
         <div class="daytitle"><h2 id="dayTitle">Today</h2><span class="hint" id="dayMeta"></span><button class="btn" id="copyDay">Copy day</button></div>
         <div id="entries"></div>
       </div>
+      <div class="gutter" data-pane="rail"><button data-collapse="rail" title="Hide this panel">›</button></div>
       <aside class="rail">
         <section><h2>Open</h2><div id="open"></div></section>
         <section><h2>Decisions</h2><div id="decisions"></div></section>
@@ -212,6 +231,7 @@
         <div class="hint">Click a component to see its files and functions · <kbd>⌥</kbd>-click to mark it</div>
         <div class="svg" id="svg"></div>
       </div>
+      <div class="gutter" data-pane="drawer"><button data-collapse="drawer" title="Close (Esc)">›</button></div>
       <aside class="drawer" id="drawer"></aside>
     </section>
 
@@ -285,6 +305,69 @@ const time = ms => new Date(ms).toLocaleTimeString([], { hour: 'numeric', minute
 const toast = text => { const t = $('#toast'); t.textContent = text; t.classList.add('on'); clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove('on'), 1800) }
 const isTyping = e => !!e.target.closest('input, textarea, select, [contenteditable]')
 
+// Pane sizes and which panes are hidden, kept in this browser.
+const PANES = {
+  nav: { min: 140, max: 420, def: 200, grows: 1 },
+  rail: { min: 220, max: 560, def: 300, grows: -1 },
+  drawer: { min: 320, max: 900, def: 460, grows: -1 },
+}
+const layout = (() => { try { return JSON.parse(localStorage.getItem('arch-live-layout') || '{}') } catch { return {} } })()
+const saveLayout = () => { try { localStorage.setItem('arch-live-layout', JSON.stringify(layout)) } catch {} }
+const applyLayout = () => {
+  for (const [pane, p] of Object.entries(PANES)) document.documentElement.style.setProperty(`--${pane}-w`, `${layout[pane] ?? p.def}px`)
+  $('#app').classList.toggle('navless', !!layout.navHidden)
+  document.body.classList.toggle('railless', !!layout.railHidden)
+  const nav = document.querySelector('.gutter[data-pane="nav"]')
+  const rail = document.querySelector('.gutter[data-pane="rail"]')
+  nav.classList.toggle('closed', !!layout.navHidden)
+  rail.classList.toggle('closed', !!layout.railHidden)
+  nav.querySelector('button').textContent = layout.navHidden ? '›' : '‹'
+  nav.querySelector('button').title = layout.navHidden ? 'Show days (\\)' : 'Hide days (\\)'
+  rail.querySelector('button').textContent = layout.railHidden ? '‹' : '›'
+  rail.querySelector('button').title = layout.railHidden ? 'Show this panel' : 'Hide this panel'
+}
+const togglePane = pane => {
+  if (pane === 'drawer') return closeDrawer()
+  layout[`${pane}Hidden`] = !layout[`${pane}Hidden`]
+  applyLayout(); saveLayout()
+}
+// Dragging a divider: narrower than its minimum hides the pane, dragging a
+// hidden one back out shows it again.
+document.querySelectorAll('.gutter').forEach(g => {
+  g.addEventListener('pointerdown', e => {
+    if (e.button !== 0 || e.target.closest('button')) return
+    const pane = g.dataset.pane
+    const p = PANES[pane]
+    const hiddenKey = `${pane}Hidden`
+    const startX = e.clientX
+    const startW = layout[hiddenKey] ? 0 : (layout[pane] ?? p.def)
+    g.setPointerCapture(e.pointerId)
+    g.classList.add('dragging'); document.body.classList.add('dragging-pane')
+    const move = ev => {
+      const w = startW + (ev.clientX - startX) * p.grows
+      const isHiding = pane !== 'drawer' && w < p.min - 60
+      if (pane !== 'drawer') layout[hiddenKey] = isHiding
+      // Hidden by the drag, it keeps the width it had, to come back at.
+      if (isHiding) { if (startW) layout[pane] = startW }
+      else layout[pane] = Math.round(Math.min(p.max, Math.max(p.min, w)))
+      applyLayout()
+    }
+    const up = () => {
+      g.classList.remove('dragging'); document.body.classList.remove('dragging-pane')
+      g.removeEventListener('pointermove', move); g.removeEventListener('pointerup', up)
+      saveLayout()
+    }
+    g.addEventListener('pointermove', move); g.addEventListener('pointerup', up)
+  })
+  g.addEventListener('dblclick', e => {
+    if (e.target.closest('button')) return
+    delete layout[g.dataset.pane]
+    applyLayout(); saveLayout()
+  })
+})
+document.addEventListener('click', e => { const b = e.target.closest('[data-collapse]'); if (b) togglePane(b.dataset.collapse) })
+applyLayout()
+
 let data = null
 let date = null
 let tab = 'journal'
@@ -342,15 +425,20 @@ const renderJournal = () => {
   document.title = `${data.meta?.title ?? 'Notepad'} · Notepad`
   // The chosen day's sessions, in the order they started that day.
   const firstTs = {}
-  for (const e of [...day.entries].sort((a, b) => a.ts - b.ts)) if (e.session && !(e.session in firstTs)) firstTs[e.session] = e.ts
+  for (const e of [...day.entries].sort((a, b) => a.ts - b.ts)) {
+    const id = e.type === 'done' ? null : (e.session ?? '')
+    if (id !== null && !(id in firstTs)) firstTs[id] = e.ts
+  }
   if (data.date === today && data.self && !(data.self in firstTs)) firstTs[data.self] = Infinity
+  // Entries from before sessions were kept get an "Earlier work" row, unless they are all there is.
+  if (Object.keys(firstTs).length === 1 && '' in firstTs) delete firstTs['']
   const daySessions = Object.keys(firstTs).sort((a, b) => firstTs[a] - firstTs[b])
   if (sessionFilter !== 'all' && !daySessions.includes(sessionFilter)) sessionFilter = 'all'
-  const countFor = id => day.entries.filter(e => e.session === id && e.type !== 'done').length
+  const countFor = id => day.entries.filter(e => (e.session ?? '') === id && e.type !== 'done').length
   const sessionRows = daySessions.length > 0
     ? `<div class="sessions"><button data-session="all" aria-current="${sessionFilter === 'all'}"><span class="name">All sessions</span><span class="count">${day.entries.filter(e => e.type !== 'done').length || ''}</span></button>${daySessions.map(id => {
         const s = sessionById(id)
-        const dot = isOpenSession(s) ? '<span class="live-dot" title="Open now"></span>' : '<span class="ended-dot" title="Closed"></span>'
+        const dot = !id ? '' : isOpenSession(s) ? '<span class="live-dot" title="Open now"></span>' : '<span class="ended-dot" title="Closed"></span>'
         const me = id === data.self ? ' <span class="badge">this</span>' : ''
         return `<button data-session="${esc(id)}" aria-current="${sessionFilter === id}" title="${esc(sessionName(id))} · double-click to rename"><span class="name">${dot}${esc(sessionName(id))}${me}</span><span class="count">${countFor(id) || ''}</span></button>`
       }).join('')}</div>`
@@ -361,7 +449,7 @@ const renderJournal = () => {
   $('#dayTitle').textContent = sessionFilter === 'all' ? (current?.label ?? data.date) : `${current?.label ?? data.date} · ${sessionName(sessionFilter)}`
   const showSession = sessionFilter === 'all' && daySessions.length > 1
   const sessionChip = e => (showSession && e.session ? `<span class="chip session">${esc(sessionName(e.session))}</span>` : '')
-  const entries = [...day.entries].filter(e => sessionFilter === 'all' || e.session === sessionFilter).sort((a, b) => b.ts - a.ts)
+  const entries = [...day.entries].filter(e => sessionFilter === 'all' || (e.session ?? '') === sessionFilter).sort((a, b) => b.ts - a.ts)
   const turns = entries.filter(e => e.type === 'turn')
   $('#dayMeta').textContent = entries.length ? `${turns.length} turn${turns.length === 1 ? '' : 's'} · ${entries.length - turns.length} note${entries.length - turns.length === 1 ? '' : 's'}` : ''
   $('#entries').innerHTML = entries.length ? entries.map(e => {
@@ -1241,6 +1329,7 @@ document.addEventListener('keydown', e => {
     return
   }
   if (k === 'n') { setTab('journal'); input.focus(); e.preventDefault() }
+  if (e.key === '\\') { togglePane('nav'); e.preventDefault() }
   if (k === '[' || k === ']') {
     const list = data.dates.map(d => d.date)
     const i = list.indexOf(data.date) + (k === '[' ? 1 : -1)

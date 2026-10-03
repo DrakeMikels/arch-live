@@ -46,11 +46,17 @@ export const componentFor = (graph: ArchGraph | null, rel: string): string | und
   let best: { id: string; length: number } | undefined
   for (const node of graph?.nodes ?? []) {
     const path = node.path ? clean(node.path) : ''
-    const prefixes = [...(node.owns ?? []).map(clean), path, path && isFile(path) ? dirOf(path) : path]
-    for (const prefix of prefixes) {
+    // What a node owns outranks where another node merely starts, at equal depth.
+    const prefixes: [string, number][] = [
+      ...(node.owns ?? []).map(o => [clean(o), 0.5] as [string, number]),
+      [path, 0],
+      [path && isFile(path) ? dirOf(path) : path, 0],
+    ]
+    for (const [prefix, bonus] of prefixes) {
       if (!prefix) continue
       const isMatch = rel === prefix || rel.startsWith(`${prefix}/`)
-      if (isMatch && (!best || prefix.length > best.length)) best = { id: node.id, length: prefix.length }
+      const length = prefix.length + bonus
+      if (isMatch && (!best || length > best.length)) best = { id: node.id, length }
     }
   }
   return best?.id
