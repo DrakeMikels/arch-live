@@ -135,6 +135,17 @@
   .fmt button:hover { background: var(--paper2); color: var(--ink); }
   .edit-actions { display: flex; gap: 6px; align-items: center; margin-top: 4px; flex-wrap: wrap; }
   .rail .note-row { padding: 5px 4px; }
+  .marks { margin: 14px 0 18px; border-top: 1px solid var(--rule); padding-top: 10px; }
+  .marks-head { display: flex; align-items: center; justify-content: space-between; }
+  .marks-head h3 { margin: 0; font-size: 10px; letter-spacing: .14em; text-transform: uppercase; color: var(--soft); font-weight: 500; }
+  .mark-row { padding: 6px 2px; border-bottom: 1px solid var(--rule); }
+  .mark-row .icon { color: var(--accent); }
+  .mark-row.done .text { text-decoration: line-through; color: var(--soft); }
+  .mark-row small { color: var(--soft); display: block; }
+  .btn.tiny { padding: 1px 8px; font-size: 11px; }
+  .drawer .editbox .hint { display: none; }
+  #map .m-mark { cursor: pointer; }
+  #map .m-mark:hover { text-decoration: underline; }
   .rail .note-body .icon { color: var(--accent); }
   .rail .note-main small { color: var(--soft); display: block; }
   .rail .editbox .hint { display: none; }
@@ -613,7 +624,8 @@ const entryHtml = (e, showSession, dayDate) => {
   const sessionChip = showSession && e.session ? `<span class="chip session">${esc(sessionName(e.session))}</span>` : ''
   if (e.type === 'done') {
     const from = e.refDate && e.refDate !== dayDate ? ` <span class="why">· ${esc(e.refType ?? 'item')} from ${esc(fromDay(e.refDate))}</span>` : ''
-    return `<div class="entry note-row completed" data-entry="${esc(e.id)}"><time>${time(e.ts)}</time><div><span class="icon">✓</span><span class="text">Done: ${inline(e.refText ?? 'an item')}</span>${from}${sessionChip}<span class="badge">${esc(e.refType ?? 'done')}</span></div></div>`
+    const verb = e.refType === 'mark' ? 'Cleared mark' : 'Done'
+    return `<div class="entry note-row completed" data-entry="${esc(e.id)}"><time>${time(e.ts)}</time><div><span class="icon">✓</span><span class="text">${verb}: ${inline(e.refText ?? 'an item')}</span>${from}${sessionChip}<span class="badge">${esc(e.refType ?? 'done')}</span></div></div>`
   }
   if (e.type === 'turn') {
     const chips = e.components.map(c => `<span class="chip">${esc(label(c))}</span>`).join('')
@@ -1077,6 +1089,8 @@ const linkPath = (ra, rb) => {
   const y1 = isDown ? ra.y + ra.h : ra.y; const y2 = isDown ? rb.y : rb.y + rb.h
   return { d: `M ${x1} ${y1} C ${x1} ${(y1 + y2) / 2}, ${x2} ${(y1 + y2) / 2}, ${x2} ${y2}`, mx: (x1 + x2) / 2, my: (y1 + y2) / 2 }
 }
+// A note's text without its formatting marks, for places that draw plain text.
+const plainText = t => String(t ?? '').replace(/\[([^\]]+)\]\([^)]+\)/g, '$1').replace(/\*\*([^*]+)\*\*/g, '$1').replace(/~~([^~]+)~~/g, '$1').replace(/`([^`]+)`/g, '$1').replace(/(^|\s)_([^_]+)_(?=\s|$|[.,;:!?])/g, '$1$2').replace(/^\s*[-*] /gm, '').replace(/\s*\n\s*/g, ' · ')
 const cutText = (t, n) => (String(t ?? '').length > n ? `${String(t).slice(0, n - 1)}…` : String(t ?? ''))
 const mapLines = (lines, x, y, lh, cls) => (lines.length ? `<text class="${cls}">${lines.map((l, i) => `<tspan x="${x}" y="${y + i * lh}">${esc(l)}</tspan>`).join('')}</text>` : '')
 
@@ -1122,7 +1136,7 @@ const mapMarkup = (L, isExport = false) => {
     if (isOpen && pv.isQuick && !isExport) out.push(`<text x="${r.x + 14}" y="${r.y + 37 + t.label.length * 18}" class="m-sub">${r.w > 420 ? 'quick look from its files · ' : 'quick look · '}<tspan class="m-cta" data-bd="${esc(n.id)}">✦ Break down with Claude</tspan></text>`)
     if (!isExport) out.push(`<text x="${r.x + r.w - 14}" y="${r.y + 21}" text-anchor="end" class="m-chev">${isOpen ? '−' : pv.parts.length ? `+${pv.parts.length}` : ''}</text>`)
     if (!isExport && (mapData.active ?? []).includes(n.id)) out.push(`<circle cx="${r.x + r.w - 10}" cy="${r.y + 10}" r="4" class="m-active"/>`)
-    if (mark) out.push(`<text x="${r.x}" y="${r.y - 7}" class="m-mark">${esc(cutText(mark, 44))}</text>`)
+    if (mark) out.push(`<text x="${r.x}" y="${r.y - 7}" class="m-mark" data-markof="${esc(n.id)}"><title>Marked: ${esc(plainText(mark))} (click to see and edit marks)</title>${esc(cutText(plainText(mark), 44))}</text>`)
     out.push('</g>')
     pv.parts.forEach((part, i) => {
       const pr = L.parts[`${n.id}/${part.id}`]
@@ -1335,6 +1349,12 @@ $('#map').addEventListener('click', async e => {
     $('#drawer').scrollTop = 0
     return
   }
+  const markOf = e.target.closest('[data-markof]')
+  if (markOf) {
+    if (drawer?.id !== markOf.dataset.markof) await openDrawer(markOf.dataset.markof)
+    $('#drawerMarks')?.scrollIntoView({ block: 'start', behavior: 'smooth' })
+    return
+  }
   const node = e.target.closest('[data-mnode]')
   if (node) {
     const id = node.dataset.mnode
@@ -1460,7 +1480,20 @@ const renderTree = (node, prefix, depth) => {
   return out.join('')
 }
 
+// The component's marks: the open ones first, then the cleared history.
+const marksSection = d => {
+  const marks = d.marks ?? []
+  const row = m => `<div class="note-row mark-row${m.done ? ' done' : ''}" data-entry="${esc(m.id)}"><div class="note-body"><span class="icon">${m.done ? '○' : '◉'}</span><div class="note-main"><div class="text rich">${rich(m.text === '·' ? '(no reason given)' : m.text)}</div><small>${esc(stamp(m.ts))}${m.session ? ` · ${esc(sessionName(m.session))}` : ''}${m.done ? ' · cleared' : ''}${m.editedAt ? ' · edited' : ''}</small></div>${m.done ? `<button class="btn tiny" data-unclear="${esc(m.id)}" title="Show it on the map again">Restore</button>` : `<button class="btn tiny" data-clear="${esc(m.id)}" title="Take it off the map; it stays in the history">Clear</button>`}<button class="edit-btn" data-edit="${esc(m.id)}" title="Edit or delete">✎</button></div></div>`
+  const open = marks.filter(m => !m.done)
+  const cleared = marks.filter(m => m.done)
+  return `<div class="marks" id="drawerMarks"><div class="marks-head"><h3>Marks</h3><button class="btn tiny" id="drawerMarkAdd">+ Add mark</button></div>
+    ${open.length ? open.map(row).join('') : '<div class="hint">No open marks. ⌥-click the component on the map, or Add mark.</div>'}
+    ${cleared.length ? `<details class="brief"><summary>Cleared (${cleared.length})</summary>${cleared.map(row).join('')}</details>` : ''}</div>`
+}
+
 const renderDrawer = () => {
+  // A mark being edited in the drawer is not swept away by a live update.
+  if (editingId && editingRow && $('#drawer').contains(editingRow)) return
   const d = drawer.data
   const q = drawer.filter.toLowerCase()
   const files = q ? d.files.filter(f => f.path.toLowerCase().includes(q) || (f.summary ?? '').toLowerCase().includes(q)) : d.files
@@ -1491,8 +1524,8 @@ const renderDrawer = () => {
       ${d.node.path ? `<button class="btn" data-open="${esc(d.node.path)}" data-line="${d.node.line ?? 1}">Open entry ↗</button>` : ''}
       <button class="btn${missing ? ' accent' : ''}" id="describe" ${missing ? '' : 'disabled'}>${missing ? `Describe ${Math.min(missing, 40)} file${missing === 1 ? '' : 's'} with Claude` : 'All files described'}</button>
       <button class="btn${d.breakdown ? '' : ' accent'}" id="breakdown" title="Claude reads the code and names the component's parts and how they connect">${d.breakdown ? 'Break down again' : 'Break down with Claude'}</button>
-      <button class="btn" id="drawerMark">Mark</button>
     </div>
+    ${marksSection(d)}
     <input class="filter" id="drawerFilter" placeholder="Filter files…" value="${esc(drawer.filter)}">
     <div class="tree">${files.length ? renderTree(buildTree(files), '', 0) : '<div class="hint">No files match.</div>'}</div>
     ${d.recent.length ? `<h3 style="margin:22px 0 6px">Recent work</h3><div class="recent">${d.recent.map(r => `<div>${inline(r.request)}<br><small>${new Date(r.ts).toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })} ${time(r.ts)}${r.summary ? ` · ${inline(r.summary)}` : ''}</small></div>`).join('')}</div>` : ''}`
@@ -2120,7 +2153,7 @@ const markComponent = async id => {
 // journal keeps the change as an event, like done.
 let editingId = null
 const findEntry = id => {
-  const all = [...(data?.day?.entries ?? []), ...(data?.open ?? []), ...(sessionLog?.days ?? []).flatMap(d => d.entries)]
+  const all = [...(data?.day?.entries ?? []), ...(data?.open ?? []), ...(sessionLog?.days ?? []).flatMap(d => d.entries), ...(drawer?.data?.marks ?? [])]
   const found = all.find(e => e.id === id && e.type !== 'done')
   if (found) return found
   // Completed on this day but written on another: rebuilt from its done line.
@@ -2205,7 +2238,7 @@ const deleteEdit = async () => {
   load()
 }
 // The journal and the side panel share one editor: it opens in the row clicked.
-for (const area of [$('#entries'), document.querySelector('.rail')]) {
+for (const area of [$('#entries'), document.querySelector('.rail'), $('#drawer')]) {
   area.addEventListener('click', e => {
     const t = e.target
     const fmt = t.closest('[data-fmt]')
@@ -2401,9 +2434,11 @@ document.addEventListener('click', async e => {
       return toast(res.ok ? 'Asked Claude to explain this part: it appears here when done' : 'Could not reach the session')
     }
     if (t.closest('[data-part-close]')) { drawer.part = null; renderDrawer(); return renderDiagram() }
-    if (t.closest('#drawerMark')) {
-      return markComponent(drawer.id)
-    }
+    if (t.closest('#drawerMarkAdd')) return markComponent(drawer.id)
+    const clear = t.closest('[data-clear]')
+    if (clear) { await api('/api/done', { ref: clear.dataset.clear }); toast('Mark cleared: it stays in the history'); return load() }
+    const unclear = t.closest('[data-unclear]')
+    if (unclear) { await api('/api/undone', { ref: unclear.dataset.unclear }); toast('Mark restored'); return load() }
     const folder = t.closest('[data-folder]')
     if (folder) { const d = folder.dataset.folder; drawer.expanded.has(d) ? drawer.expanded.delete(d) : drawer.expanded.add(d); return renderDrawer() }
     const file = t.closest('[data-file]')

@@ -479,9 +479,9 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && url.pathname === '/api/graph') {
       // Marks come from today's journal, so a new one shows at once; what
       // Claude is working in comes from the mod.
-      const today = recent().find(d => d.date === dateKey(Date.now()))
+      // A mark stays on the map until it is cleared, whatever day it was made.
       const marks = {}
-      for (const e of today?.entries ?? []) if (e.type === 'mark' && e.component && !e.done) marks[e.component] = e.text === '·' ? 'marked' : e.text
+      for (const e of recent().flatMap(d => d.entries).sort((a, b) => a.ts - b.ts)) if (e.type === 'mark' && e.component && !e.done) marks[e.component] = e.text === '·' ? 'marked' : e.text
       return send(res, 200, { ...(await workspace.map()), marks, active: meta().active ?? [] })
     }
     if (req.method === 'GET' && url.pathname === '/api/symbols') return send(res, 200, workspace.symbols(url.searchParams.get('path') ?? ''))

@@ -168,6 +168,10 @@ export const createWorkspace = ({ project, logs, graph, recent }) => {
           isEntry: f === node.path,
         }
       }),
+      // Every mark on it, newest first, cleared ones included, for the drawer.
+      marks: days
+        .flatMap(d => d.entries.filter(e => e.type === 'mark' && e.component === id).map(e => ({ ...e, date: d.date })))
+        .sort((a, b) => b.ts - a.ts),
       recent: days
         .flatMap(d => d.entries)
         .filter(e => e.type === 'turn' && e.components.includes(id))

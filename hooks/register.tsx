@@ -791,10 +791,12 @@ const loadDays = async ($: EngineInterface, fromDate: string): Promise<JournalDa
 
 const recentDays = async ($: EngineInterface) => loadDays($, dateKey((await $.clock.now()) - 60 * DAY_MS))
 
-// Today's marks (component → its latest open mark), drawn on the map.
-const marksOf = (day: JournalDay | null): Record<string, string> => {
+// Open marks (component → its latest open mark), drawn on the map. A mark
+// stays until it is cleared, whatever day it was made.
+const marksOf = (days: (JournalDay | null)[]): Record<string, string> => {
   const marks: Record<string, string> = {}
-  for (const e of day?.entries ?? []) if (isNote(e) && e.type === 'mark' && e.component && !e.done) marks[e.component] = e.text
+  const entries = days.flatMap(d => d?.entries ?? []).sort((a, b) => a.ts - b.ts)
+  for (const e of entries) if (isNote(e) && e.type === 'mark' && e.component && !e.done) marks[e.component] = e.text
   return marks
 }
 
@@ -804,9 +806,8 @@ const publishLive = async ($: EngineInterface) => {
   const graph = (await $.state.get({ plugin: 'arch-live', key: 'graph' })).value ?? null
   const theme = await currentTheme($)
   const now = await $.clock.now()
-  const today = (await recentDays($)).find(d => d.date === dateKey(now)) ?? null
   const active = (await $.state.get({ plugin: 'arch-live', key: 'active' })).value ?? []
-  const overlay: Overlay = { marks: marksOf(today), active, ids: true }
+  const overlay: Overlay = { marks: marksOf(await recentDays($)), active, ids: true }
   await $.fs.write(`${dir}/live.svg`, renderSvg(graph, theme, undefined, overlay).svg)
   const meta = {
     project: await projectPath($),
@@ -1786,7 +1787,7 @@ export const register: Register = on => {
     // Sized to the pane: the layout is chosen to fill its width, and the
     // drawing is given that width (and its own height) so nothing letterboxes.
     const room = Math.max(280, e.props.bodyColumns * CELL_PX - 16)
-    const overlay: Overlay = { marks: marksOf(jday), active }
+    const overlay: Overlay = { marks: marksOf(await recentDays($)), active }
     const drawing = renderSvg(graph, theme, room, overlay)
     const width = Math.round(Math.min(room, drawing.width * 1.5))
     const height = Math.round((width * drawing.height) / drawing.width)
