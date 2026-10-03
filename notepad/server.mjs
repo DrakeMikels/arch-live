@@ -14,6 +14,7 @@ import { execFile } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import fs from 'node:fs'
 import http from 'node:http'
+import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -115,7 +116,65 @@ const sessions = () => {
     .filter(s => s?.id)
     .sort((a, b) => (b.lastAt ?? 0) - (a.lastAt ?? 0))
 }
-const sessionNames = () => Object.fromEntries(sessions().filter(s => s.name).map(s => [s.id, s.name]))
+// The title the Claude app shows for a session, and the folder it runs in,
+// read from its transcript (~/.claude/projects/<folder>/<id>.jsonl). The
+// title sits near the end, the folder near the start; both are cached by mtime.
+const PROJECTS_DIR = path.join(os.homedir(), '.claude', 'projects')
+const chatCache = new Map()
+const transcriptOf = id => {
+  try {
+    for (const d of fs.readdirSync(PROJECTS_DIR)) {
+      const f = path.join(PROJECTS_DIR, d, `${id}.jsonl`)
+      if (fs.existsSync(f)) return f
+    }
+  } catch {}
+  return null
+}
+const readRange = (file, start, length) => {
+  const fd = fs.openSync(file, 'r')
+  try {
+    const buf = Buffer.alloc(length)
+    const n = fs.readSync(fd, buf, 0, length, start)
+    return buf.subarray(0, n).toString('utf8')
+  } finally {
+    fs.closeSync(fd)
+  }
+}
+const unjson = raw => {
+  try {
+    return JSON.parse(`"${raw}"`)
+  } catch {
+    return raw
+  }
+}
+const chatInfo = id => {
+  if (!/^[\w-]+$/.test(String(id))) return {}
+  const cached = chatCache.get(id)
+  const file = cached?.file ?? transcriptOf(id)
+  if (!file) return {}
+  let stat
+  try {
+    stat = fs.statSync(file)
+  } catch {
+    return {}
+  }
+  if (cached && cached.mtime === stat.mtimeMs) return cached.info
+  const TAIL = 2_000_000
+  let titles = [...readRange(file, Math.max(0, stat.size - TAIL), TAIL).matchAll(/"customTitle":"((?:[^"\\]|\\.)*)"/g)]
+  if (!titles.length && stat.size > TAIL) titles = [...fs.readFileSync(file, 'utf8').matchAll(/"customTitle":"((?:[^"\\]|\\.)*)"/g)]
+  const cwd = /"cwd":"((?:[^"\\]|\\.)*)"/.exec(readRange(file, 0, 200_000))?.[1]
+  const info = { title: titles.length ? unjson(titles[titles.length - 1][1]) : undefined, cwd: cwd ? unjson(cwd) : undefined }
+  chatCache.set(id, { file, mtime: stat.mtimeMs, info })
+  return info
+}
+
+// Sessions with the name to show: yours if you renamed it, else the app's.
+const namedSessions = () =>
+  sessions().map(s => {
+    const chat = chatInfo(s.id)
+    return { ...s, name: s.isNamed ? s.name : (chat.title ?? s.name), folder: chat.cwd ?? null }
+  })
+const sessionNames = () => Object.fromEntries(namedSessions().filter(s => s.name).map(s => [s.id, s.name]))
 
 // Tells the mod (which reads this process's output) to refresh its pane.
 const changed = () => process.stdout.write('CHANGED\n')
@@ -147,7 +206,9 @@ const state = date => {
     })),
     day,
     self: SELF,
-    sessions: sessions(),
+    project: PROJECT,
+    sessions: namedSessions(),
+    sessionCounts: days.flatMap(d => d.entries).filter(e => e.type !== 'done').reduce((acc, e) => ({ ...acc, [e.session ?? '']: (acc[e.session ?? ''] ?? 0) + 1 }), {}),
     open: openItems(days),
     labels: Object.fromEntries(labelsFrom(days, g)),
   }
@@ -295,6 +356,15 @@ const server = http.createServer(async (req, res) => {
       return
     }
     if (req.method === 'GET' && url.pathname === '/api/state') return send(res, 200, state(url.searchParams.get('date')))
+    if (req.method === 'GET' && url.pathname === '/api/sessionlog') {
+      // One session's whole history, newest day first.
+      const id = url.searchParams.get('id') ?? ''
+      const days = recent()
+        .map(d => ({ date: d.date, entries: d.entries.filter(e => (e.session ?? '') === id && e.type !== 'done') }))
+        .filter(d => d.entries.length)
+        .reverse()
+      return send(res, 200, { id, days })
+    }
     if (req.method === 'GET' && url.pathname === '/api/search') return send(res, 200, search(url.searchParams.get('q') ?? ''))
     if (req.method === 'GET' && url.pathname === '/api/standup') {
       return send(res, 200, { markdown: standup(), written: readJson(path.join(LOGS, 'standup-written.json'), null), last: Number(readJson(path.join(LOGS, 'standup.json'), {}).last ?? 0), hasSession: !!SELF })

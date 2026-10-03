@@ -17,7 +17,7 @@
   button, input, textarea, select { font: inherit; color: inherit; }
   code { font: inherit; background: var(--paper2); padding: 0 4px; border-radius: 3px; }
 
-  .app { display: grid; grid-template-columns: var(--nav-w, 200px) 6px 1fr; grid-template-rows: auto 1fr; height: 100vh; }
+  .app { display: grid; grid-template-columns: var(--nav-w, 240px) 6px 1fr; grid-template-rows: auto 1fr; height: 100vh; }
   .app > nav { grid-column: 1; }
   .app > .gutter { grid-column: 2; }
   .app > main { grid-column: 3; }
@@ -57,6 +57,11 @@
   nav button:hover { background: var(--paper2); }
   nav button[aria-current="true"] { background: var(--accentTint); color: var(--ink); box-shadow: inset 2px 0 0 var(--accent); }
   nav .count { color: var(--soft); font-size: 11px; }
+  nav .group { font-size: 10px; color: var(--soft); margin: 10px 10px 2px; }
+  nav .session-row { flex-direction: column; justify-content: flex-start !important; gap: 1px; padding: 6px 10px !important; }
+  nav .session-row .title { color: var(--ink); line-height: 1.35; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  nav .session-row .meta { color: var(--soft); font-size: 11px; padding-left: 12px; }
+  .dayhead { font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--soft); font-weight: 500; margin: 22px 0 2px; }
   nav .sessions { margin: 2px 0 8px 10px; padding-left: 6px; border-left: 1px solid var(--rule); }
   nav .sessions button { padding: 4px 8px; font-size: 12px; }
   nav .sessions .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
@@ -219,7 +224,7 @@
     </div>
     <button class="mode" id="mode" title="Light, dark, or follow the system">◐ Auto</button>
   </header>
-  <nav><h2>Days</h2><div id="days"></div></nav>
+  <nav><div id="days"></div></nav>
   <div class="gutter" data-pane="nav"><button data-collapse="nav" title="Hide days (\)">‹</button></div>
   <main>
     <section class="view on" data-view="journal">
@@ -333,7 +338,7 @@ const isTyping = e => !!e.target.closest('input, textarea, select, [contentedita
 
 // Pane sizes and which panes are hidden, kept in this browser.
 const PANES = {
-  nav: { min: 140, max: 420, def: 200, grows: 1 },
+  nav: { min: 160, max: 440, def: 240, grows: 1 },
   rail: { min: 220, max: 560, def: 300, grows: -1 },
   drawer: { min: 320, max: 900, def: 460, grows: -1 },
 }
@@ -398,7 +403,7 @@ let data = null
 let date = null
 let tab = 'journal'
 let type = 'note'
-let sessionFilter = 'all'
+let viewSession = null // a session id to show its history, or null for the day
 
 // Sessions: one file each, named after their first request until renamed.
 const sessionById = id => (data?.sessions ?? []).find(s => s.id === id)
@@ -445,63 +450,104 @@ const ICON = { note: '✎', todo: '☐', blocker: '⛔', decision: '◆', mark: 
 
 /* ---------- Journal ---------- */
 
+// One journal entry, as a row.
+const entryHtml = (e, showSession) => {
+  const sessionChip = showSession && e.session ? `<span class="chip session">${esc(sessionName(e.session))}</span>` : ''
+  if (e.type === 'turn') {
+    const chips = e.components.map(c => `<span class="chip">${esc(label(c))}</span>`).join('')
+    const files = e.files.length ? `<details><summary>${e.files.length} file${e.files.length > 1 ? 's' : ''}${e.commands ? ` · ${e.commands} command${e.commands > 1 ? 's' : ''}` : ''}</summary>${e.files.map(f => `<div>${f.created ? '+ ' : '~ '}<code>${esc(f.path)}</code></div>`).join('')}</details>` : ''
+    const arch = e.arch ? `<div class="hint">Map: ${e.arch.added.length ? `added ${esc(e.arch.added.join(', '))}` : ''}${e.arch.removed.length ? ` removed ${esc(e.arch.removed.join(', '))}` : ''}</div>` : ''
+    return `<div class="entry" data-entry="${esc(e.id)}"><time>${time(e.ts)}</time><div><span class="what">${inline(e.request)}</span>${chips}${sessionChip}<ul>${e.summary.map(s => `<li>${inline(s)}</li>`).join('')}</ul>${arch}${files}</div></div>`
+  }
+  const checkable = e.type === 'todo' || e.type === 'blocker'
+  const icon = checkable ? `<input type="checkbox" class="check" data-done="${e.id}" ${e.done ? 'checked disabled' : ''}>` : `<span class="icon">${ICON[e.type] ?? '•'}</span>`
+  const why = e.why ? ` <span class="why">— because ${inline(e.why)}</span>` : ''
+  const alt = e.alternatives ? ` <span class="why">(considered: ${inline(e.alternatives)})</span>` : ''
+  const chip = e.component ? `<span class="chip">${esc(label(e.component))}</span>` : ''
+  const by = e.by === 'claude' ? '<span class="badge">Claude</span>' : ''
+  const kind = e.type === 'note' ? '' : `<span class="badge">${e.type}</span>`
+  return `<div class="entry note-row ${e.done ? 'done' : ''}" data-entry="${esc(e.id)}"><time>${time(e.ts)}</time><div>${icon}<span class="text">${inline(e.text)}</span>${why}${alt}${chip}${sessionChip}${kind}${by}</div></div>`
+}
+const countLine = entries => {
+  const turns = entries.filter(e => e.type === 'turn').length
+  const notes = entries.length - turns
+  return entries.length ? `${turns} turn${turns === 1 ? '' : 's'} · ${notes} note${notes === 1 ? '' : 's'}` : ''
+}
+
+// The sidebar, like the Claude app's: this project's sessions by title, newest
+// first under Today / Yesterday / This week / Older, then the days.
+const renderNav = () => {
+  const now = new Date()
+  const t0 = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()
+  const DAY = 864e5
+  const group = ts => (ts >= t0 ? 'Today' : ts >= t0 - DAY ? 'Yesterday' : ts >= t0 - 6 * DAY ? 'This week' : 'Older')
+  const when = ts => (ts >= t0 ? time(ts) : ts >= t0 - 6 * DAY ? new Date(ts).toLocaleDateString([], { weekday: 'short' }) : new Date(ts).toLocaleDateString([], { month: 'short', day: 'numeric' }))
+  const counts = data.sessionCounts ?? {}
+  const list = (data.sessions ?? []).filter(s => counts[s.id] || isOpenSession(s) || s.id === data.self).sort((a, b) => (b.lastAt ?? 0) - (a.lastAt ?? 0))
+  const rows = []
+  let heading = ''
+  for (const s of list) {
+    const g = group(s.lastAt ?? 0)
+    if (g !== heading) { heading = g; rows.push(`<div class="group">${g}</div>`) }
+    const dot = isOpenSession(s) ? '<span class="live-dot" title="Open now"></span>' : '<span class="ended-dot" title="Closed"></span>'
+    const elsewhere = s.folder && s.folder !== data.project ? `Runs in ${s.folder.split('/').pop()} · ` : ''
+    const meta = [s.id === data.self ? 'this session' : '', when(s.lastAt ?? 0), elsewhere ? `in ${s.folder.split('/').pop()}` : ''].filter(Boolean).join(' · ')
+    rows.push(`<button class="session-row" data-session="${esc(s.id)}" aria-current="${viewSession === s.id}" title="${esc(`${sessionName(s.id)}\n${elsewhere}${counts[s.id] ?? 0} entries · double-click to rename`)}"><span class="title">${dot}${esc(sessionName(s.id))}</span><span class="meta">${esc(meta)}</span></button>`)
+  }
+  if (counts['']) rows.push(`<div class="group">Before sessions</div><button class="session-row" data-session="" aria-current="${viewSession === ''}"><span class="name">Earlier work</span><span class="count">${counts['']}</span></button>`)
+  const days = data.dates.map(d =>
+    `<button data-date="${d.date}" aria-current="${viewSession === null && d.date === data.date}"><span>${esc(d.label)}</span><span class="count">${d.count || ''}</span></button>`).join('')
+  $('#days').innerHTML =
+    `<h2>Sessions</h2>${rows.join('') || '<div class="hint" style="padding:0 10px">No sessions yet.</div>'}` +
+    `<h2 style="margin-top:18px">Days</h2>${days}`
+}
+
+let sessionLog = null // { id, days } for the session being viewed
 const renderJournal = () => {
-  const { day, open, dates, today } = data
+  const { day, open, today } = data
   $('#title').textContent = data.meta?.title ?? 'Notepad'
   document.title = `${data.meta?.title ?? 'Notepad'} · Notepad`
-  // The chosen day's sessions, in the order they started that day.
-  const firstTs = {}
-  for (const e of [...day.entries].sort((a, b) => a.ts - b.ts)) {
-    const id = e.type === 'done' ? null : (e.session ?? '')
-    if (id !== null && !(id in firstTs)) firstTs[id] = e.ts
-  }
-  if (data.date === today && data.self && !(data.self in firstTs)) firstTs[data.self] = Infinity
-  // Entries from before sessions were kept get an "Earlier work" row, unless they are all there is.
-  if (Object.keys(firstTs).length === 1 && '' in firstTs) delete firstTs['']
-  const daySessions = Object.keys(firstTs).sort((a, b) => firstTs[a] - firstTs[b])
-  if (sessionFilter !== 'all' && !daySessions.includes(sessionFilter)) sessionFilter = 'all'
-  const countFor = id => day.entries.filter(e => (e.session ?? '') === id && e.type !== 'done').length
-  const sessionRows = daySessions.length > 0
-    ? `<div class="sessions"><button data-session="all" aria-current="${sessionFilter === 'all'}"><span class="name">All sessions</span><span class="count">${day.entries.filter(e => e.type !== 'done').length || ''}</span></button>${daySessions.map(id => {
-        const s = sessionById(id)
-        const dot = !id ? '' : isOpenSession(s) ? '<span class="live-dot" title="Open now"></span>' : '<span class="ended-dot" title="Closed"></span>'
-        const me = id === data.self ? ' <span class="badge">this</span>' : ''
-        return `<button data-session="${esc(id)}" aria-current="${sessionFilter === id}" title="${esc(sessionName(id))} · double-click to rename"><span class="name">${dot}${esc(sessionName(id))}${me}</span><span class="count">${countFor(id) || ''}</span></button>`
-      }).join('')}</div>`
-    : ''
-  $('#days').innerHTML = dates.map(d =>
-    `<button data-date="${d.date}" aria-current="${d.date === data.date}"><span>${esc(d.label)}</span><span class="count">${d.count || ''}</span></button>${d.date === data.date ? sessionRows : ''}`).join('')
-  const current = dates.find(d => d.date === data.date)
-  $('#dayTitle').textContent = sessionFilter === 'all' ? (current?.label ?? data.date) : `${current?.label ?? data.date} · ${sessionName(sessionFilter)}`
-  const showSession = sessionFilter === 'all' && daySessions.length > 1
-  const sessionChip = e => (showSession && e.session ? `<span class="chip session">${esc(sessionName(e.session))}</span>` : '')
-  const entries = [...day.entries].filter(e => sessionFilter === 'all' || (e.session ?? '') === sessionFilter).sort((a, b) => b.ts - a.ts)
-  const turns = entries.filter(e => e.type === 'turn')
-  $('#dayMeta').textContent = entries.length ? `${turns.length} turn${turns.length === 1 ? '' : 's'} · ${entries.length - turns.length} note${entries.length - turns.length === 1 ? '' : 's'}` : ''
-  $('#entries').innerHTML = entries.length ? entries.map(e => {
-    if (e.type === 'turn') {
-      const chips = e.components.map(c => `<span class="chip">${esc(label(c))}</span>`).join('')
-      const files = e.files.length ? `<details><summary>${e.files.length} file${e.files.length > 1 ? 's' : ''}${e.commands ? ` · ${e.commands} command${e.commands > 1 ? 's' : ''}` : ''}</summary>${e.files.map(f => `<div>${f.created ? '+ ' : '~ '}<code>${esc(f.path)}</code></div>`).join('')}</details>` : ''
-      const arch = e.arch ? `<div class="hint">Map: ${e.arch.added.length ? `added ${esc(e.arch.added.join(', '))}` : ''}${e.arch.removed.length ? ` removed ${esc(e.arch.removed.join(', '))}` : ''}</div>` : ''
-      return `<div class="entry" data-entry="${esc(e.id)}"><time>${time(e.ts)}</time><div><span class="what">${inline(e.request)}</span>${chips}${sessionChip(e)}<ul>${e.summary.map(s => `<li>${inline(s)}</li>`).join('')}</ul>${arch}${files}</div></div>`
-    }
-    const checkable = e.type === 'todo' || e.type === 'blocker'
-    const icon = checkable ? `<input type="checkbox" class="check" data-done="${e.id}" ${e.done ? 'checked disabled' : ''}>` : `<span class="icon">${ICON[e.type] ?? '•'}</span>`
-    const why = e.why ? ` <span class="why">— because ${inline(e.why)}</span>` : ''
-    const alt = e.alternatives ? ` <span class="why">(considered: ${inline(e.alternatives)})</span>` : ''
-    const chip = e.component ? `<span class="chip">${esc(label(e.component))}</span>` : ''
-    const by = e.by === 'claude' ? '<span class="badge">Claude</span>' : ''
-    const kind = e.type === 'note' ? '' : `<span class="badge">${e.type}</span>`
-    return `<div class="entry note-row ${e.done ? 'done' : ''}" data-entry="${esc(e.id)}"><time>${time(e.ts)}</time><div>${icon}<span class="text">${inline(e.text)}</span>${why}${alt}${chip}${sessionChip(e)}${kind}${by}</div></div>`
-  }).join('') : `<div class="empty">${data.date === today ? 'Nothing logged yet today. Notes you add here, /n in Claude Code, and each Claude turn show up live.' : 'Nothing logged this day.'}</div>`
-
+  renderNav()
   $('#open').innerHTML = open.length ? open.map(n =>
     `<div class="item"><input type="checkbox" class="check" data-done="${n.id}"><div>${n.type === 'blocker' ? '⛔ ' : ''}${inline(n.text)}<small>${esc(label(n.component))}</small></div></div>`).join('') : '<div class="hint">Nothing open.</div>'
-  const decisions = day.entries.filter(e => e.type === 'decision')
-  $('#decisions').innerHTML = decisions.length ? decisions.map(d => `<div class="item"><div>◆ ${inline(d.text)}${d.why ? `<small>because ${inline(d.why)}</small>` : ''}</div></div>`).join('') : '<div class="hint">None this day.</div>'
+
+  if (viewSession !== null) return renderSession()
+
+  const current = data.dates.find(d => d.date === data.date)
+  $('#dayTitle').textContent = current?.label ?? data.date
+  const entries = [...day.entries].filter(e => e.type !== 'done').sort((a, b) => b.ts - a.ts)
+  const showSession = new Set(entries.map(e => e.session ?? '')).size > 1
+  $('#dayMeta').textContent = countLine(entries)
+  $('#entries').innerHTML = entries.length ? entries.map(e => entryHtml(e, showSession)).join('')
+    : `<div class="empty">${data.date === today ? 'Nothing logged yet today. Notes you add here, /n in Claude Code, and each Claude turn show up live.' : 'Nothing logged this day.'}</div>`
+  renderRail(entries, 'this day')
+}
+
+const renderRail = (entries, span) => {
+  const decisions = entries.filter(e => e.type === 'decision')
+  $('#decisions').innerHTML = decisions.length ? decisions.map(d => `<div class="item"><div>◆ ${inline(d.text)}${d.why ? `<small>because ${inline(d.why)}</small>` : ''}</div></div>`).join('') : `<div class="hint">None ${span}.</div>`
   const counts = {}
-  for (const t of turns) for (const c of t.components) counts[c] = (counts[c] ?? 0) + 1
-  $('#components').innerHTML = Object.keys(counts).length ? Object.entries(counts).sort((a, b) => b[1] - a[1]).map(([c, n]) => `<div class="item"><div>${esc(label(c))}<small>${n} turn${n > 1 ? 's' : ''}</small></div></div>`).join('') : '<div class="hint">No component work this day.</div>'
+  for (const t of entries.filter(e => e.type === 'turn')) for (const c of t.components) counts[c] = (counts[c] ?? 0) + 1
+  $('#components').innerHTML = Object.keys(counts).length ? Object.entries(counts).sort((a, b) => b[1] - a[1]).map(([c, n]) => `<div class="item"><div>${esc(label(c))}<small>${n} turn${n > 1 ? 's' : ''}</small></div></div>`).join('') : `<div class="hint">No component work ${span}.</div>`
+}
+
+// One session's whole history, a heading per day.
+const renderSession = async () => {
+  const id = viewSession
+  const s = sessionById(id)
+  $('#dayTitle').textContent = sessionName(id)
+  if (!sessionLog || sessionLog.id !== id) $('#entries').innerHTML = '<div class="empty">Loading…</div>'
+  const log = await api(`/api/sessionlog?id=${encodeURIComponent(id)}`)
+  if (viewSession !== id) return
+  sessionLog = log
+  const all = log.days.flatMap(d => d.entries)
+  const where = s?.folder && s.folder !== data.project ? ` · runs in ${s.folder.split('/').pop()}` : ''
+  $('#dayMeta').textContent = `${countLine(all)}${where}${isOpenSession(s) ? ' · open now' : ''}`
+  $('#entries').innerHTML = log.days.length ? log.days.map(d => {
+    const label = new Date(`${d.date}T12:00:00`).toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' })
+    return `<h3 class="dayhead">${esc(label)}</h3>${[...d.entries].sort((a, b) => b.ts - a.ts).map(e => entryHtml(e, false)).join('')}`
+  }).join('') : '<div class="empty">This session has not logged anything in this project yet.</div>'
+  renderRail(all, 'in this session')
 }
 
 // Claude's write-up on top when there is one, the journal brief under it.
@@ -1232,7 +1278,7 @@ $('#entries').addEventListener('click', async e => {
   $('#search').value = ''
   searchQuery = ''
   date = hit.dataset.goto
-  sessionFilter = 'all'
+  viewSession = null
   await load()
   const row = document.querySelector(`[data-entry="${CSS.escape(hit.dataset.id)}"]`)
   if (row) { row.scrollIntoView({ block: 'center', behavior: 'smooth' }); row.classList.add('flash') }
@@ -1333,8 +1379,8 @@ document.addEventListener('click', async e => {
   const t = e.target
   if (t.closest('[data-tab]')) return setTab(t.closest('[data-tab]').dataset.tab)
   if (t.closest('[data-type]')) { setType(t.closest('[data-type]').dataset.type); input.focus() }
-  if (t.closest('[data-date]')) { date = t.closest('[data-date]').dataset.date; sessionFilter = 'all'; load() }
-  if (t.closest('[data-session]')) { sessionFilter = t.closest('[data-session]').dataset.session; renderJournal() }
+  if (t.closest('[data-date]')) { date = t.closest('[data-date]').dataset.date; viewSession = null; load() }
+  if (t.closest('[data-session]')) { viewSession = t.closest('[data-session]').dataset.session; renderJournal() }
   if (t.matches('[data-done]') && t.checked) { await api('/api/done', { ref: t.dataset.done }); toast('Done'); load() }
   if (t.closest('[data-tool]')) { tool = t.closest('[data-tool]').dataset.tool; if (tool !== 'select') selection.clear(); renderTools(); drawBoard() }
   if (t.closest('[data-color]')) {
@@ -1377,7 +1423,7 @@ document.addEventListener('click', async e => {
 })
 $('#days').addEventListener('dblclick', async e => {
   const id = e.target.closest('[data-session]')?.dataset.session
-  if (!id || id === 'all') return
+  if (!id) return
   const name = prompt('Name this session', sessionName(id))
   if (!name?.trim()) return
   const res = await api('/api/session', { id, name: name.trim() })

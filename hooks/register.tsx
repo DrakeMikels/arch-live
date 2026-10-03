@@ -87,6 +87,7 @@ const askAtom = atom({ plugin: 'arch-live', key: 'ask' } as const, null)
 // The mapped project, relative to the session folder ('' is the folder itself),
 // so a session over a folder of several repos still finds its map.
 const rootAtom = atom({ plugin: 'arch-live', key: 'root' } as const, '')
+const rootGuessAtom = atom({ plugin: 'arch-live', key: 'rootGuess' } as const, false)
 const tabAtom = atom({ plugin: 'arch-live', key: 'tab' } as const, 'diagram')
 const jdateAtom = atom({ plugin: 'arch-live', key: 'jdate' } as const, '')
 const jdayAtom = atom({ plugin: 'arch-live', key: 'jday' } as const, null)
@@ -562,6 +563,7 @@ const setDefaultTheme = async ($: EngineInterface) => {
 const startMap = async ($: EngineInterface, folder: string) => {
   const root = folder.trim() ? await absRoot($, cleanRoot(folder)) : await currentRoot($)
   await update($, rootAtom, () => root)
+  await update($, rootGuessAtom, () => false)
   await update($, askAtom, () => null)
   submitSoon($, mapPrompt(root))
   // The prompt waits while Claude is busy; say so, or the button looks dead.
@@ -595,8 +597,13 @@ const LOG_SCHEMA_COMPONENT = { type: 'string', description: 'The architecture no
 
 const projectPath = async ($: EngineInterface) => currentRoot($)
 
+// Whose journal this session writes: its project, or, while the project is
+// only a guess in a folder of repos, that folder's own journal, so work is
+// never filed under a repo it did not touch.
+const journalPath = async ($: EngineInterface) => ((await read($, rootGuessAtom)) ? $.session.cwd() : projectPath($))
+
 const logsDir = async ($: EngineInterface) =>
-  `${(await $.env.get('HOME')) ?? '~'}/.claude/arch-live/logs/${projectKey(await projectPath($))}`
+  `${(await $.env.get('HOME')) ?? '~'}/.claude/arch-live/logs/${projectKey(await journalPath($))}`
 
 // The day file the mod owns (<date>.json); the notepad appends to <date>.web.jsonl.
 const readRawDay = async ($: EngineInterface, date: string): Promise<JournalDay> => {
@@ -714,10 +721,14 @@ const publishLive = async ($: EngineInterface) => {
 const refreshAll = async ($: EngineInterface) => {
   const themeText = await $.fs.read(await homeThemePath($)).catch(() => undefined)
   const theme = themeText ? plain(normalizeTheme(parseJson(themeText))) : null
-  const root = await findRoot($)
+  const isGuess = await read($, rootGuessAtom)
+  const kept = !isGuess && (await read($, rootAtom)) ? await currentRoot($) : undefined
+  const root = kept ?? (await findRoot($))
   const graph = await loadGraph($, root).catch(() => null)
   await update($, themeAtom, () => theme)
   await update($, rootAtom, () => root)
+  const cwd = await $.session.cwd()
+  if (!kept) await update($, rootGuessAtom, () => root !== cwd)
   await update($, graphAtom, () => graph)
   await refreshJournal($).catch(() => undefined)
   await writePopout($, graph, theme ?? DEFAULT_THEME).catch(() => undefined)
@@ -927,6 +938,39 @@ type TurnDraft = {
 let turn: TurnDraft | undefined
 let lastComponent: string | undefined
 
+// In a folder of repos, a turn belongs to the repo its edits were in: the
+// pane switches there and the turn is logged in that repo's journal.
+const followWork = async ($: EngineInterface, done: TurnDraft) => {
+  const cwd = await $.session.cwd()
+  const root = await currentRoot($)
+  if (done.files.size === 0) return
+  const abs = [...done.files.values()].map(f => (f.path.startsWith('/') ? f.path : `${root}/${f.path}`))
+  const counts = new Map<string, number>()
+  for (const p of abs) {
+    const rest = p.startsWith(`${cwd}/`) ? p.slice(cwd.length + 1) : ''
+    const child = rest.includes('/') ? rest.split('/')[0] : ''
+    if (child && !child.startsWith('.')) counts.set(child, (counts.get(child) ?? 0) + 1)
+  }
+  const top = [...counts.entries()].sort((a, b) => b[1] - a[1])[0]
+  if (!top) return
+  const next = `${cwd}/${top[0]}`
+  if (next === root && !(await read($, rootGuessAtom))) return
+  const graph = next === root ? await read($, graphAtom) : await loadGraph($, next).catch(() => null)
+  await update($, rootAtom, () => next)
+  await update($, rootGuessAtom, () => false)
+  await update($, graphAtom, () => graph)
+  const files = new Map<string, JournalFile>()
+  const before = [...done.files.values()]
+  abs.forEach((p, i) => {
+    const rel = p.startsWith(`${next}/`) ? p.slice(next.length + 1) : p
+    const f = before[i]
+    if (f) files.set(rel, { ...f, path: rel })
+  })
+  done.files = files
+  done.components = new Set([...files.keys()].map(r => componentFor(graph, r)).filter((c): c is string => !!c))
+  await changeSession($, ({ endedAt: _ended, ...open }) => open).catch(() => undefined)
+}
+
 const recordFile = async ($: EngineInterface, absPath: string, created: boolean) => {
   if (!turn) return
   const project = await projectPath($)
@@ -1072,6 +1116,7 @@ export const register: Register = on => {
     const graph = await loadGraph($, root).catch(() => null)
     await update($, themeAtom, () => theme)
     await update($, rootAtom, () => root)
+    await update($, rootGuessAtom, () => root !== e.cwd)
     await update($, graphAtom, () => graph)
 
     const isProject = (await Promise.all(PROJECT_MARKERS.map(m => $.fs.exists(m)))).some(Boolean)
@@ -1117,6 +1162,7 @@ export const register: Register = on => {
     const args = e as unknown as UpdateArgs
     if (args.root !== undefined) {
       const root = await absRoot($, cleanRoot(args.root))
+      await update($, rootGuessAtom, () => false)
       if (root !== (await currentRoot($))) {
         await update($, rootAtom, () => root)
         const existing = await loadGraph($, root).catch(() => null)
@@ -1206,6 +1252,7 @@ export const register: Register = on => {
     const done = turn
     if (!e.agentId && done) {
       turn = undefined
+      await followWork($, done).catch(() => undefined)
       await changeSession($, s => s).catch(() => undefined)
       await update($, activeAtom, () => [])
       await publishLive($).catch(() => undefined)

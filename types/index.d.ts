@@ -129,6 +129,8 @@ declare module 'claude-code' {
       theme: ArchTheme | null
       ask: ArchAsk
       root: string
+      /** True while the root is only a guess (the newest map in a folder of repos). */
+      rootGuess: boolean
       tab: PaneTab
       /** The day the Journal tab shows, and the days there are. */
       jdate: string
