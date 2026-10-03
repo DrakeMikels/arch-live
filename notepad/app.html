@@ -133,7 +133,11 @@
   .fmt { display: flex; gap: 2px; border-bottom: 1px solid var(--rule); padding-bottom: 4px; margin-bottom: 2px; }
   .fmt button { border: 0; background: none; border-radius: 5px; padding: 1px 8px; cursor: pointer; color: var(--muted); }
   .fmt button:hover { background: var(--paper2); color: var(--ink); }
-  .edit-actions { display: flex; gap: 6px; align-items: center; margin-top: 4px; }
+  .edit-actions { display: flex; gap: 6px; align-items: center; margin-top: 4px; flex-wrap: wrap; }
+  .rail .note-row { padding: 5px 4px; }
+  .rail .note-body .icon { color: var(--accent); }
+  .rail .note-main small { color: var(--soft); display: block; }
+  .rail .editbox .hint { display: none; }
   .edit-actions .spacer { flex: 1; }
   .btn.danger { color: #d9363e; border-color: rgba(217,54,62,.4); }
   .entry.completed .icon { color: var(--accent); font-weight: 600; }
@@ -149,6 +153,11 @@
   .diagram { flex: 1; overflow: auto; padding: 16px; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
   .maptools { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
   .maptools .spacer { flex: 1; }
+  .exportwrap { position: relative; }
+  .menu { position: absolute; right: 0; top: calc(100% + 4px); z-index: 20; min-width: 220px; background: var(--nodeFill); border: 1px solid var(--rule); border-radius: 9px; padding: 4px; box-shadow: 0 10px 30px rgba(0,0,0,.14); }
+  .menu button { display: flex; justify-content: space-between; width: 100%; border: 0; background: none; text-align: left; padding: 6px 10px; border-radius: 6px; cursor: pointer; }
+  .menu button:hover { background: var(--accentTint); }
+  .menu .menunote { padding: 6px 10px 4px; border-top: 1px solid var(--rule); margin-top: 4px; }
   .zoomctl { display: inline-flex; align-items: center; gap: 2px; border: 1px solid var(--rule); border-radius: 7px; padding: 1px 4px; }
   .zoomctl button { border: 0; background: none; cursor: pointer; padding: 1px 6px; color: var(--muted); }
   .mapwrap { flex: 1; min-height: 0; position: relative; border: 1px solid var(--rule); border-radius: 10px; overflow: hidden; background-color: var(--paper); background-image: radial-gradient(var(--rule) 1px, transparent 1px); background-size: 22px 22px; }
@@ -343,6 +352,14 @@
           <button class="btn" id="mapExpand">Expand all</button>
           <button class="btn" id="mapCollapse">Collapse all</button>
           <button class="btn" id="mapFit">Fit</button>
+          <span class="exportwrap"><button class="btn" id="mapExport" aria-haspopup="menu">Export ▾</button>
+            <div class="menu" id="exportMenu" role="menu" hidden>
+              <button data-export="png" role="menuitem">PNG image <span class="hint">2×</span></button>
+              <button data-export="svg" role="menuitem">SVG <span class="hint">vector</span></button>
+              <button data-export="mmd" role="menuitem">Mermaid (.mmd)</button>
+              <button data-export="copy" role="menuitem">Copy Mermaid</button>
+              <div class="hint menunote">Exports what is open now. Expand all first for every part.</div>
+            </div></span>
           <span class="zoomctl"><button id="mapOut" title="Zoom out">−</button><span id="mapZoom" class="hint">100%</span><button id="mapIn" title="Zoom in">+</button></span>
         </div>
         <div class="mapwrap"><svg id="map" xmlns="http://www.w3.org/2000/svg"><g id="mapvp"></g></svg></div>
@@ -643,8 +660,9 @@ const renderJournal = () => {
   $('#title').textContent = data.meta?.title ?? 'Notepad'
   document.title = `${data.meta?.title ?? 'Notepad'} · Notepad`
   renderNav()
+  // The side panel edits like the journal: tick or untick, ✎ or double-click.
   $('#open').innerHTML = open.length ? open.map(n =>
-    `<div class="item"><input type="checkbox" class="check" data-done="${n.id}"><div>${n.type === 'blocker' ? '⛔ ' : ''}${firstLine(n.text)}<small>${esc(label(n.component))}</small></div></div>`).join('') : '<div class="hint">Nothing open.</div>'
+    `<div class="item note-row" data-entry="${esc(n.id)}"><div class="note-body"><input type="checkbox" class="check" data-done="${n.id}" title="Mark done"><div class="note-main">${n.type === 'blocker' ? '⛔ ' : ''}${firstLine(n.text)}<small>${esc(label(n.component))}</small></div><button class="edit-btn" data-edit="${esc(n.id)}" title="Edit">✎</button></div></div>`).join('') : '<div class="hint">Nothing open.</div>'
 
   if (viewSession !== null) return renderSession()
 
@@ -660,9 +678,9 @@ const renderJournal = () => {
 
 const renderRail = (entries, span) => {
   const completed = entries.filter(e => e.type === 'done')
-  $('#completed').innerHTML = completed.length ? completed.map(d => `<div class="item"><div>✓ <span class="struck">${firstLine(d.refText ?? 'an item')}</span><small>${time(d.ts)}${d.refDate && d.refDate !== data.date ? ` · added ${esc(fromDay(d.refDate))}` : ''}</small></div></div>`).join('') : `<div class="hint">Nothing completed ${span}.</div>`
+  $('#completed').innerHTML = completed.length ? completed.map(d => `<div class="item note-row" data-entry="${esc(d.ref)}"><div class="note-body"><input type="checkbox" class="check" data-done="${esc(d.ref)}" checked title="Reopen"><div class="note-main"><span class="struck">${firstLine(d.refText ?? 'an item')}</span><small>${time(d.ts)}${d.refDate && d.refDate !== data.date ? ` · added ${esc(fromDay(d.refDate))}` : ''}</small></div><button class="edit-btn" data-edit="${esc(d.ref)}" title="Edit">✎</button></div></div>`).join('') : `<div class="hint">Nothing completed ${span}.</div>`
   const decisions = entries.filter(e => e.type === 'decision')
-  $('#decisions').innerHTML = decisions.length ? decisions.map(d => `<div class="item"><div>◆ ${firstLine(d.text)}${d.why ? `<small>because ${inline(d.why)}</small>` : ''}</div></div>`).join('') : `<div class="hint">None ${span}.</div>`
+  $('#decisions').innerHTML = decisions.length ? decisions.map(d => `<div class="item note-row" data-entry="${esc(d.id)}"><div class="note-body"><span class="icon">◆</span><div class="note-main">${firstLine(d.text)}${d.why ? `<small>because ${inline(d.why)}</small>` : ''}</div><button class="edit-btn" data-edit="${esc(d.id)}" title="Edit">✎</button></div></div>`).join('') : `<div class="hint">None ${span}.</div>`
   const counts = {}
   for (const t of entries.filter(e => e.type === 'turn')) for (const c of t.components) counts[c] = (counts[c] ?? 0) + 1
   $('#components').innerHTML = Object.keys(counts).length ? Object.entries(counts).sort((a, b) => b[1] - a[1]).map(([c, n]) => `<div class="item"><div>${esc(label(c))}<small>${n} turn${n > 1 ? 's' : ''}</small></div></div>`).join('') : `<div class="hint">No component work ${span}.</div>`
@@ -1048,8 +1066,10 @@ const linkPath = (ra, rb) => {
 const cutText = (t, n) => (String(t ?? '').length > n ? `${String(t).slice(0, n - 1)}…` : String(t ?? ''))
 const mapLines = (lines, x, y, lh, cls) => (lines.length ? `<text class="${cls}">${lines.map((l, i) => `<tspan x="${x}" y="${y + i * lh}">${esc(l)}</tspan>`).join('')}</text>` : '')
 
-const drawMap = L => {
-  if (!mapData) return
+// The map's SVG content for a layout. For an export, nothing interactive:
+// no selection, no counts or buttons, no live marker.
+const mapMarkup = (L, isExport = false) => {
+  if (!mapData) return ''
   const out = []
   out.push(`<defs>${['muted', 'link', 'soft'].map(c => `<marker id="m-${c}" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L8,4 L0,8 z" style="fill:var(--${c})"/></marker>`).join('')}</defs>`)
   const top = Math.min(...Object.values(L.nodes).map(r => r.y), 40)
@@ -1081,20 +1101,20 @@ const drawMap = L => {
     const isFocus = (mapData.focus ?? []).includes(n.id)
     const mark = mapData.marks?.[n.id]
     out.push(`<g class="m-node${isOpen ? ' open' : ''}" data-mnode="${esc(n.id)}" opacity="${r.a.toFixed(3)}"><title>${esc(n.label)}${n.sublabel ? ` · ${esc(n.sublabel)}` : ''}</title>`)
-    out.push(`<rect x="${r.x}" y="${r.y}" width="${r.w}" height="${r.h}" rx="${isOpen ? 14 : 9}" class="m-box${isFocus ? ' focus' : ''}${drawer?.id === n.id ? ' sel' : ''}"/>`)
+    out.push(`<rect x="${r.x}" y="${r.y}" width="${r.w}" height="${r.h}" rx="${isOpen ? 14 : 9}" class="m-box${isFocus ? ' focus' : ''}${!isExport && drawer?.id === n.id ? ' sel' : ''}"/>`)
     out.push(`<text x="${r.x + 14}" y="${r.y + 20}" class="m-kind${isFocus ? ' focus' : ''}">${esc(n.kind.toUpperCase())}</text>`)
     out.push(mapLines(t.label, r.x + 14, r.y + 39, 18, 'm-label'))
     out.push(mapLines(t.sub, r.x + 14, r.y + 39 + t.label.length * 18 - 2, 14, 'm-sub'))
-    if (isOpen && pv.isQuick) out.push(`<text x="${r.x + 14}" y="${r.y + 37 + t.label.length * 18}" class="m-sub">${r.w > 420 ? 'quick look from its files · ' : 'quick look · '}<tspan class="m-cta" data-bd="${esc(n.id)}">✦ Break down with Claude</tspan></text>`)
-    out.push(`<text x="${r.x + r.w - 14}" y="${r.y + 21}" text-anchor="end" class="m-chev">${isOpen ? '−' : pv.parts.length ? `+${pv.parts.length}` : ''}</text>`)
-    if ((mapData.active ?? []).includes(n.id)) out.push(`<circle cx="${r.x + r.w - 10}" cy="${r.y + 10}" r="4" class="m-active"/>`)
+    if (isOpen && pv.isQuick && !isExport) out.push(`<text x="${r.x + 14}" y="${r.y + 37 + t.label.length * 18}" class="m-sub">${r.w > 420 ? 'quick look from its files · ' : 'quick look · '}<tspan class="m-cta" data-bd="${esc(n.id)}">✦ Break down with Claude</tspan></text>`)
+    if (!isExport) out.push(`<text x="${r.x + r.w - 14}" y="${r.y + 21}" text-anchor="end" class="m-chev">${isOpen ? '−' : pv.parts.length ? `+${pv.parts.length}` : ''}</text>`)
+    if (!isExport && (mapData.active ?? []).includes(n.id)) out.push(`<circle cx="${r.x + r.w - 10}" cy="${r.y + 10}" r="4" class="m-active"/>`)
     if (mark) out.push(`<text x="${r.x}" y="${r.y - 7}" class="m-mark">${esc(cutText(mark, 44))}</text>`)
     out.push('</g>')
     pv.parts.forEach((part, i) => {
       const pr = L.parts[`${n.id}/${part.id}`]
       if (!pr || pr.a < 0.02) return
       const pt = partText(part)
-      const on = drawer?.id === n.id && drawer?.part === part.id
+      const on = !isExport && drawer?.id === n.id && drawer?.part === part.id
       partOut.push(`<g class="m-part" data-mpart="${esc(`${n.id}/${part.id}`)}" opacity="${pr.a.toFixed(3)}"><title>${esc(part.summary ?? part.label)}</title>
         <rect x="${pr.x}" y="${pr.y}" width="${pr.w}" height="${pr.h}" rx="8" class="m-pbox${on ? ' sel' : ''}"/>
         <text x="${pr.x + 32}" y="${pr.y + 19}" class="m-kind">${esc((part.role ?? (pv.isQuick ? 'files' : 'part')).toUpperCase())}</text>
@@ -1104,7 +1124,12 @@ const drawMap = L => {
         <text x="${pr.x + 16}" y="${pr.y + 19.5}" text-anchor="middle" class="m-pinnum${part.detail ? ' done' : ''}">${i + 1}</text></g>`)
     })
   }
-  $('#mapvp').innerHTML = out.join('') + edgeOut.join('') + partOut.join('')
+  return out.join('') + edgeOut.join('') + partOut.join('')
+}
+
+const drawMap = L => {
+  if (!mapData) return
+  $('#mapvp').innerHTML = mapMarkup(L)
   $('#mapvp').setAttribute('transform', `translate(${mapView.x},${mapView.y}) scale(${mapView.z})`)
   $('#mapZoom').textContent = `${Math.round(mapView.z * 100)}%`
 }
@@ -1177,6 +1202,107 @@ const setAllOpen = async isOpen => {
   await animateMap(null, 520)
   setTimeout(fitMap, 560)
 }
+
+/* ---------- Exporting the map ---------- */
+
+// What the map looks like now (open components included), as a standalone
+// SVG: the map's own CSS rules inlined with this theme's colors resolved.
+const mapStyles = () => {
+  const css = []
+  for (const sheet of document.styleSheets) {
+    let rules = []
+    try { rules = [...sheet.cssRules] } catch { continue }
+    for (const r of rules) if (r.selectorText?.includes('#map ')) css.push(r.cssText.replaceAll('#map ', ''))
+  }
+  return css.join('\n').replace(/var\(--([\w-]+)\)/g, (_, v) => cssVar(v) || 'currentColor')
+}
+const mapSvg = async () => {
+  const L = await computeLayout()
+  const top = Math.min(...Object.values(L.nodes).map(r => r.y), 40) - 34
+  const pad = 24
+  const w = Math.ceil(L.w + pad * 2)
+  const h = Math.ceil(L.h - top + pad * 2)
+  const title = mapData?.title || data?.meta?.title || 'Architecture'
+  return {
+    w, h,
+    svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${-pad} ${top - pad} ${w} ${h}" width="${w}" height="${h}" font-family="${esc(cssVar('font') || 'monospace')}"><title>${esc(title)} · architecture</title><style>${mapStyles()}</style><rect x="${-pad}" y="${top - pad}" width="${w}" height="${h}" style="fill:${cssVar('paper')}"/>${mapMarkup(L, true)}</svg>`,
+  }
+}
+const mapPng = async () => {
+  const { svg, w, h } = await mapSvg()
+  const img = new Image()
+  img.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`
+  await img.decode()
+  const scale = Math.min(2, 8000 / Math.max(w, h))
+  const canvas = document.createElement('canvas')
+  canvas.width = Math.round(w * scale); canvas.height = Math.round(h * scale)
+  canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height)
+  return new Promise(resolve => canvas.toBlob(resolve, 'image/png'))
+}
+
+// The map as a Mermaid flowchart: tiers as columns, open components as groups
+// of their parts, links ending on the parts that make the call.
+const mermaidId = id => String(id).replace(/[^\w]/g, '_')
+const mermaidText = t => String(t ?? '').replace(/"/g, '#quot;').replace(/[<>]/g, c => (c === '<' ? '#lt;' : '#gt;'))
+const SHAPE = { client: ['([', '])'], edge: ['{{', '}}'], service: ['[', ']'], worker: ['[', ']'], queue: ['[/', '/]'], store: ['[(', ')]'], external: ['[[', ']]'] }
+const mapMermaid = () => {
+  const title = mapData?.title || data?.meta?.title || 'Architecture'
+  const lines = [`%% ${title} · architecture, from arch-live (${new Date().toLocaleDateString()})`, 'flowchart LR']
+  const tiers = TIER_LABEL.map(() => [])
+  for (const n of [...mapData.nodes].sort((a, b) => a.order - b.order)) tiers[TIER[n.kind] ?? 2].push(n)
+  // Tiers as comments: Mermaid lays out left to right best without tier groups.
+  tiers.forEach((nodes, i) => {
+    if (!nodes.length) return
+    lines.push(`  %% ${TIER_LABEL[i]}`)
+    for (const n of nodes) {
+      const id = mermaidId(n.id)
+      if (openSet.has(n.id) && partsFor(n).parts.length) {
+        lines.push(`  subgraph ${id}["${mermaidText(n.label)}"]`, '    direction LR')
+        partsFor(n).parts.forEach((p, k) => lines.push(`    ${id}__${mermaidId(p.id)}["${k + 1}. ${mermaidText(p.label)}${p.summary ? `<br/><small>${mermaidText(p.summary)}</small>` : ''}"]`))
+        lines.push('  end')
+      } else {
+        const [a, b] = SHAPE[n.kind] ?? SHAPE.service
+        lines.push(`  ${id}${a}"${mermaidText(n.label)}${n.sublabel ? `<br/><small>${mermaidText(n.sublabel)}</small>` : ''}"${b}`)
+      }
+    }
+  })
+  const arrow = s => (s === 'async' ? '-.->' : s === 'thin' ? '-.->' : s === 'http' ? '==>' : '-->')
+  const end = x => (x.includes('/') ? `${mermaidId(x.slice(0, x.indexOf('/')))}__${mermaidId(x.slice(x.indexOf('/') + 1))}` : mermaidId(x))
+  for (const x of linkEnds()) lines.push(`  ${end(x.from)} ${arrow(x.style)}${x.label ? `|"${mermaidText(x.label)}"|` : ''} ${end(x.to)}`)
+  for (const n of mapData.nodes) {
+    if (!openSet.has(n.id)) continue
+    const ids = new Set(partsFor(n).parts.map(p => p.id))
+    for (const x of partsFor(n).edges) if (ids.has(x.from) && ids.has(x.to)) lines.push(`  ${mermaidId(n.id)}__${mermaidId(x.from)} --> ${x.label ? `|"${mermaidText(x.label)}"| ` : ''}${mermaidId(n.id)}__${mermaidId(x.to)}`)
+  }
+  const focus = (mapData.focus ?? []).filter(id => mapData.nodes.some(n => n.id === id))
+  if (focus.length) lines.push(`  classDef focus stroke:${cssVar('accent')},stroke-width:2px`, `  class ${focus.map(mermaidId).join(',')} focus`)
+  return `${lines.join('\n')}\n`
+}
+
+const saveBlob = (name, blob) => {
+  const a = document.createElement('a')
+  a.href = URL.createObjectURL(blob)
+  a.download = name
+  a.click()
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000)
+}
+const exportName = ext => `${(mapData?.title || data?.meta?.title || 'architecture').replace(/[^\w-]+/g, '-').toLowerCase()}-architecture.${ext}`
+$('#mapExport').addEventListener('click', e => { e.stopPropagation(); $('#exportMenu').hidden = !$('#exportMenu').hidden })
+document.addEventListener('click', e => { if (!e.target.closest('#exportMenu, #mapExport')) $('#exportMenu').hidden = true })
+$('#exportMenu').addEventListener('click', async e => {
+  const kind = e.target.closest('[data-export]')?.dataset.export
+  if (!kind || !mapData) return
+  $('#exportMenu').hidden = true
+  try {
+    if (kind === 'png') saveBlob(exportName('png'), await mapPng())
+    if (kind === 'svg') saveBlob(exportName('svg'), new Blob([(await mapSvg()).svg], { type: 'image/svg+xml' }))
+    if (kind === 'mmd') saveBlob(exportName('mmd'), new Blob([mapMermaid()], { type: 'text/plain' }))
+    if (kind === 'copy') { await navigator.clipboard.writeText(mapMermaid()); return toast('Mermaid copied: paste it in a ```mermaid block') }
+    toast(`Exported ${exportName(kind)}`)
+  } catch (err) {
+    toast(`Could not export: ${err?.message ?? err}`)
+  }
+})
 
 $('#map').addEventListener('click', async e => {
   if (mapDragged) { mapDragged = false; return }
@@ -1930,7 +2056,15 @@ $('#sendNote').addEventListener('keydown', e => { if (e.key === 'Enter' && (e.me
 // Your own entries (notes, todos, blockers, decisions) edit in place; the
 // journal keeps the change as an event, like done.
 let editingId = null
-const findEntry = id => [...(data?.day?.entries ?? []), ...(sessionLog?.days ?? []).flatMap(d => d.entries)].find(e => e.id === id)
+const findEntry = id => {
+  const all = [...(data?.day?.entries ?? []), ...(data?.open ?? []), ...(sessionLog?.days ?? []).flatMap(d => d.entries)]
+  const found = all.find(e => e.id === id && e.type !== 'done')
+  if (found) return found
+  // Completed on this day but written on another: rebuilt from its done line.
+  const done = all.find(e => e.type === 'done' && e.ref === id && e.refText)
+  return done ? { id, type: done.refType ?? 'todo', text: done.refText } : undefined
+}
+let editingRow = null
 const wrapSel = (ta, before, after = before) => {
   const s = ta.selectionStart; const e = ta.selectionEnd
   const sel = ta.value.slice(s, e) || 'text'
@@ -1956,12 +2090,13 @@ const formatKeys = (e, ta) => {
   e.preventDefault(); FORMAT[f](ta); return true
 }
 const grow = ta => { ta.style.height = 'auto'; ta.style.height = `${ta.scrollHeight}px` }
-const startEditEntry = id => {
+const startEditEntry = (id, at = null) => {
   const e = findEntry(id)
-  const row = document.querySelector(`#entries [data-entry="${CSS.escape(id)}"]`)
+  const row = at ?? document.querySelector(`#entries [data-entry="${CSS.escape(id)}"]`)
   if (!e || !row || !['note', 'todo', 'blocker', 'decision', 'mark'].includes(e.type)) return
   if (editingId && editingId !== id) cancelEdit()
   editingId = id
+  editingRow = row
   const body = row.querySelector('.note-body')
   body.innerHTML = `<div class="editbox">
     <div class="fmt"><button data-fmt="bold" title="Bold (⌘B)"><b>B</b></button><button data-fmt="italic" title="Italic (⌘I)"><i>I</i></button><button data-fmt="code" title="Code (⌘E)">‹›</button><button data-fmt="list" title="Bulleted list">• List</button><button data-fmt="link" title="Link (⌘K)">Link</button></div>
@@ -1979,15 +2114,16 @@ const startEditEntry = id => {
     if (ev.key === 'Enter' && (ev.metaKey || ev.ctrlKey || (el !== ta && !ev.shiftKey))) { ev.preventDefault(); saveEdit() }
   }))
 }
-const cancelEdit = () => { editingId = null; renderJournal() }
+const cancelEdit = () => { editingId = null; editingRow = null; renderJournal() }
 const saveEdit = async () => {
   const id = editingId
-  const row = document.querySelector(`#entries [data-entry="${CSS.escape(id)}"]`)
+  const row = editingRow ?? document.querySelector(`#entries [data-entry="${CSS.escape(id)}"]`)
   const text = row?.querySelector('.edit-text')?.value.trim()
   if (!text) return toast('Write something, or use Delete')
   const why = row.querySelector('.edit-why')?.value
   const res = await api('/api/edit', { ref: id, text, ...(why !== undefined ? { why } : {}) })
   editingId = null
+  editingRow = null
   toast(res.ok ? 'Saved' : (res.error ?? 'Could not save'))
   load()
 }
@@ -1996,22 +2132,27 @@ const deleteEdit = async () => {
   if (!confirm(`Delete this ${e?.type ?? 'note'} from the journal?`)) return
   const res = await api('/api/remove', { ref: editingId })
   editingId = null
+  editingRow = null
   toast(res.ok ? 'Deleted' : (res.error ?? 'Could not delete'))
   load()
 }
-$('#entries').addEventListener('click', e => {
-  const t = e.target
-  const fmt = t.closest('[data-fmt]')
-  if (fmt) { const ta = fmt.closest('.editbox').querySelector('.edit-text'); FORMAT[fmt.dataset.fmt](ta); return }
-  if (t.closest('[data-edit]')) return startEditEntry(t.closest('[data-edit]').dataset.edit)
-  if (t.closest('[data-edit-save]')) return saveEdit()
-  if (t.closest('[data-edit-cancel]')) return cancelEdit()
-  if (t.closest('[data-edit-delete]')) return deleteEdit()
-})
-$('#entries').addEventListener('dblclick', e => {
-  const row = e.target.closest('.note-row')
-  if (row && !e.target.closest('.editbox, a, input')) startEditEntry(row.dataset.entry)
-})
+// The journal and the side panel share one editor: it opens in the row clicked.
+for (const area of [$('#entries'), document.querySelector('.rail')]) {
+  area.addEventListener('click', e => {
+    const t = e.target
+    const fmt = t.closest('[data-fmt]')
+    if (fmt) { const ta = fmt.closest('.editbox').querySelector('.edit-text'); FORMAT[fmt.dataset.fmt](ta); return }
+    const edit = t.closest('[data-edit]')
+    if (edit) return startEditEntry(edit.dataset.edit, edit.closest('.note-row'))
+    if (t.closest('[data-edit-save]')) return saveEdit()
+    if (t.closest('[data-edit-cancel]')) return cancelEdit()
+    if (t.closest('[data-edit-delete]')) return deleteEdit()
+  })
+  area.addEventListener('dblclick', e => {
+    const row = e.target.closest('.note-row')
+    if (row && !e.target.closest('.editbox, a, input')) startEditEntry(row.dataset.entry, row)
+  })
+}
 
 /* ---------- Search ---------- */
 
