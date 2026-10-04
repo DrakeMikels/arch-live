@@ -109,6 +109,8 @@ const mapOpenAtom = atom({ plugin: 'arch-live', key: 'mapOpen' } as const, [])
 const mapSelAtom = atom({ plugin: 'arch-live', key: 'mapSel' } as const, null)
 const mapChangeAtom = atom({ plugin: 'arch-live', key: 'mapChange' } as const, null)
 const paneClockAtom = atom({ plugin: 'arch-live', key: 'paneClock' } as const, 0)
+// Off by default: a live frame takes the scroll wheel, so the pane scrolls in jerks over it.
+const paneHoverAtom = atom({ plugin: 'arch-live', key: 'paneHover' } as const, false)
 
 // How long the drawing tags what the latest map change added or changed.
 const FRESH_MS = 15 * 60_000
@@ -2005,6 +2007,7 @@ export const register: Register = on => {
     const room = Math.max(280, e.props.bodyColumns * CELL_PX - 16)
     // Redrawn each minute as well as on every change, so what fades with time does.
     await read($, paneClockAtom)
+    const isHover = await read($, paneHoverAtom)
     const now = await $.clock.now()
     const days = await recentDays($)
     const nodes = [...(graph?.nodes ?? [])].sort((a, b) => a.order - b.order)
@@ -2036,7 +2039,7 @@ export const register: Register = on => {
         {tabs}
         <Text key="map-status" dimColor>{status}</Text>
         {active.length ? <Text key="map-active" bold>{`Claude is working in ${active.map(name).join(', ')}`}</Text> : null}
-        <Svg source={drawing.svg} alt={drawing.alt} width={width} height={height} isInteractive />
+        <Svg source={drawing.svg} alt={drawing.alt} width={width} height={height} isInteractive={isHover} />
         {mapAskedAt ? (
           <Text key="map-asked" dimColor>{`Re-map requested at ${timeLabel(mapAskedAt)} · Claude starts as soon as it is free, and the map redraws when it is done.`}</Text>
         ) : null}
@@ -2094,6 +2097,12 @@ export const register: Register = on => {
         <Box flexDirection="row" gap={1} flexWrap="wrap">
           <Button key="map" label={graph ? 'Re-map' : 'Map a project'} onPress={() => act($, 'Re-map', () => startMap($, ''))} />
           <Button key="theme" label="Style…" onPress={() => update($, askAtom, () => 'brand')} />
+          <Button
+            key="hover"
+            label={isHover ? 'Hover details: on' : 'Hover details: off'}
+            dimColor={!isHover}
+            onPress={() => update($, paneHoverAtom, () => !isHover)}
+          />
           <Button
             key="export"
             label="Export SVG"

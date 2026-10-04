@@ -201,6 +201,8 @@ declare module 'claude-code' {
       mapChange: MapChange | null
       /** Bumped each minute, so the pane redraws what fades with time. */
       paneClock: number
+      /** Draw the pane's map in a live frame (hover, tooltips, animation); it scrolls less smoothly. */
+      paneHover: boolean
     }
   }
 }
