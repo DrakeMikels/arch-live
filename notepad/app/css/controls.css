@@ -1,0 +1,10 @@
+/* Buttons, the toast and the narrow-screen layout. Loaded last, so these
+   rules win over the views' own. */
+
+.btn { border: 1px solid var(--rule); background: var(--nodeFill); border-radius: 7px; padding: 4px 11px; cursor: pointer; white-space: nowrap; }
+.btn:hover { border-color: var(--muted); }
+.btn.primary { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+.btn.accent { background: var(--accent); color: #fff; border-color: var(--accent); }
+.toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--ink); color: var(--paper); padding: 6px 14px; border-radius: 8px; opacity: 0; transition: opacity .2s; pointer-events: none; z-index: 30; }
+.toast.on { opacity: 1; }
+@media (max-width: 720px) { .app { grid-template-columns: 1fr; } .app > nav, .app > .gutter, .view .gutter { display: none; } .app > main { grid-column: 1; } .drawer { width: 100%; } }

@@ -486,6 +486,15 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8', 'cache-control': 'max-age=86400' })
     return res.end(readText(path.join(here, 'vendor', 'elk.bundled.js')))
   }
+  // The page's own styles and scripts (app/css, app/js) are code too. Read on
+  // each request, so an edit shows on the next refresh.
+  const asset = /^\/app\/(css|js)\/([\w-]+)\.(css|js)$/.exec(url.pathname)
+  if (req.method === 'GET' && asset && asset[1] === asset[3]) {
+    const file = path.join(here, 'app', asset[1], `${asset[2]}.${asset[3]}`)
+    if (!fs.existsSync(file)) return send(res, 404, { error: 'no such file' })
+    res.writeHead(200, { 'content-type': `text/${asset[1] === 'css' ? 'css' : 'javascript'}; charset=utf-8`, 'cache-control': 'no-cache' })
+    return res.end(readText(file))
+  }
   const token = url.searchParams.get('t') ?? req.headers['x-notepad-token']
   if (token !== TOKEN) return send(res, 403, { error: 'missing or wrong token' })
 

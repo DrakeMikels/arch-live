@@ -21,7 +21,7 @@ The mod hooks are the hub: Claude Code calls them, they draw the pane, write the
 | Diagram renderer | `hooks/render.ts`, `hooks/theme.ts` |
 | Journal and STE distiller | `hooks/journal.ts`, `hooks/ste.ts` |
 | Notepad server | `notepad/server.mjs`, `notepad/workspace.mjs` |
-| Browser notepad | `notepad/app.html` |
+| Browser notepad | `notepad/app.html` (markup), `notepad/app/css/*.css` and `notepad/app/js/*.js`, one file per part, loaded in the order the page lists |
 
 Your theme lives in `~/.claude/arch-live/theme.json` and your journal in `~/.claude/arch-live/logs/<project>/`, outside every repo.
 

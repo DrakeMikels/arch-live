@@ -1,0 +1,22 @@
+/* Board: the whiteboard and its tools. */
+
+.board { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.boardbar { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--rule); flex-wrap: wrap; }
+.boardbar input.title { border: 1px solid transparent; background: none; padding: 3px 8px; border-radius: 6px; font-weight: 600; width: 220px; }
+.boardbar input.title:hover, .boardbar input.title:focus { border-color: var(--rule); outline: 0; background: var(--nodeFill); }
+.boardbar select { border: 1px solid var(--rule); border-radius: 6px; background: var(--nodeFill); padding: 3px 6px; }
+.boardbar .spacer { flex: 1; }
+.stage { position: relative; flex: 1; overflow: hidden; background-color: var(--paper); background-image: radial-gradient(var(--rule) 1px, transparent 1px); background-size: 22px 22px; }
+.stage svg#board { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; user-select: none; }
+.tools { position: absolute; left: 12px; top: 12px; display: flex; flex-direction: column; gap: 4px; background: var(--nodeFill); border: 1px solid var(--rule); border-radius: 10px; padding: 6px; z-index: 3; box-shadow: 0 4px 16px rgba(0,0,0,.06); }
+.tools button { width: 34px; height: 30px; border: 0; background: none; border-radius: 6px; cursor: pointer; position: relative; color: var(--muted); }
+.tools button:hover { background: var(--paper2); }
+.tools button[aria-pressed="true"] { background: var(--accentTint); color: var(--ink); box-shadow: inset 0 0 0 1px var(--accent); }
+.tools button kbd { position: absolute; right: 1px; bottom: 0; border: 0; font-size: 8px; padding: 0; color: var(--soft); }
+.tools hr { border: 0; border-top: 1px solid var(--rule); margin: 4px 2px; }
+.swatch { width: 18px !important; height: 18px !important; border-radius: 50% !important; margin: 2px auto; display: block; box-shadow: inset 0 0 0 1px rgba(0,0,0,.15); }
+.swatch[aria-pressed="true"] { box-shadow: 0 0 0 2px var(--paper), 0 0 0 4px var(--ink) !important; }
+.zoom { position: absolute; right: 12px; bottom: 12px; display: flex; gap: 4px; align-items: center; background: var(--nodeFill); border: 1px solid var(--rule); border-radius: 8px; padding: 3px; z-index: 3; }
+.zoom button { border: 0; background: none; cursor: pointer; padding: 2px 8px; border-radius: 5px; }
+.zoom button:hover { background: var(--paper2); }
+.editor { position: absolute; z-index: 5; border: 1px dashed var(--accent); background: var(--nodeFill); outline: 0; resize: none; padding: 0; margin: 0; overflow: hidden; white-space: pre; line-height: 1.35; }

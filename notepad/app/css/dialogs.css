@@ -1,0 +1,35 @@
+/* Dialogs: settings, help, sending a board, and the notepad's own prompts. */
+
+.modal { position: fixed; inset: 0; background: rgba(0,0,0,.25); display: none; align-items: center; justify-content: center; z-index: 20; }
+.modal.on { display: flex; }
+.modal .card { background: var(--paper); border: 1px solid var(--rule); border-radius: 12px; padding: 18px; width: min(560px, 92vw); box-shadow: 0 20px 60px rgba(0,0,0,.2); }
+.modal h3 { margin: 0 0 4px; font-size: 14px; }
+.modal textarea { width: 100%; min-height: 90px; border: 1px solid var(--rule); border-radius: 8px; padding: 8px 10px; background: var(--nodeFill); outline: 0; margin: 10px 0; }
+.modal .row { display: flex; gap: 8px; justify-content: flex-end; align-items: center; }
+.modal .card.ask { width: min(460px, 92vw); }
+.modal .card.wide { width: min(720px, 94vw); max-height: 86vh; overflow-y: auto; position: relative; }
+.modal .close { position: absolute; right: 12px; top: 10px; border: 0; background: none; font-size: 18px; color: var(--soft); cursor: pointer; }
+.icon-btn { padding: 3px 8px; display: inline-flex; align-items: center; }
+.settings section { border-top: 1px solid var(--rule); padding: 12px 0; }
+.settings section:first-child { border-top: 0; }
+.settings h4 { margin: 0 0 8px; font-size: 10px; letter-spacing: .14em; text-transform: uppercase; color: var(--soft); font-weight: 500; }
+.settings .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; justify-content: flex-start; margin: 6px 0; }
+.settings table { border-collapse: collapse; width: 100%; font-size: 12px; }
+.settings td { padding: 3px 6px; border-bottom: 1px solid var(--rule); }
+.settings td.num { text-align: right; color: var(--muted); white-space: nowrap; }
+.settings select { border: 1px solid var(--rule); border-radius: 7px; background: var(--nodeFill); padding: 3px 8px; width: auto; margin: 0; }
+.settings code.path { font-size: 11px; word-break: break-all; }
+.settings .chip button { border: 0; background: none; cursor: pointer; color: var(--soft); padding: 0 0 0 4px; }
+.settings dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; margin: 0; font-size: 12px; }
+.settings dt { color: var(--soft); }
+.settings dd { margin: 0; }
+.seg { display: inline-flex; border: 1px solid var(--rule); border-radius: 8px; overflow: hidden; }
+.seg button { border: 0; background: none; padding: 4px 12px; cursor: pointer; color: var(--muted); }
+.seg button[aria-pressed="true"] { background: var(--accentTint); color: var(--ink); }
+.btn.warn { border-color: #d1980b; color: #a87503; }
+
+.modal .card.ask input { width: 100%; border: 1px solid var(--rule); border-radius: 8px; padding: 8px 10px; background: var(--nodeFill); outline: 0; margin: 12px 0; }
+.modal .card.ask input:focus, .modal .card.ask textarea:focus { border-color: var(--accent); }
+.modal .card.ask .row .hint { margin-right: auto; }
+.btn.accent.danger { background: #d9363e; border-color: #d9363e; color: #fff; }
+.modal img { max-width: 100%; max-height: 220px; border: 1px solid var(--rule); border-radius: 8px; display: block; margin: 8px 0; background: var(--paper); }
