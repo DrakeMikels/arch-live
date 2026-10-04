@@ -1385,6 +1385,20 @@ const componentCard = (n: ArchNode, graph: ArchGraph, facts: { isActive: boolean
     .join('\n\n')
 }
 
+// The pane refuses a Markdown block over 10,000 characters (and then draws
+// nothing), so a long one is cut at a line, with the rest in the notepad.
+const MARKDOWN_MAX = 9000
+const fitText = (text: string, keep: 'start' | 'end' = 'start') => {
+  if (text.length <= MARKDOWN_MAX) return text
+  const note = '_…cut here to fit the pane: the rest is in the notepad (Open notepad ↗)._'
+  if (keep === 'end') {
+    const tail = text.slice(-MARKDOWN_MAX)
+    return `${note}\n\n${tail.slice(Math.min(Math.max(tail.indexOf('\n\n'), 0), MARKDOWN_MAX / 2)).trimStart()}`
+  }
+  const cut = text.slice(0, MARKDOWN_MAX)
+  return `${cut.slice(0, Math.max(cut.lastIndexOf('\n'), MARKDOWN_MAX / 2))}\n\n${note}`
+}
+
 // Saves a changed node into the map file and the pane.
 const saveNode = async ($: EngineInterface, graph: ArchGraph, id: string, change: (n: ArchNode) => ArchNode) => {
   const next: ArchGraph = plain({ ...graph, nodes: graph.nodes.map(n => (n.id === id ? change(n) : n)) })
@@ -1536,12 +1550,17 @@ export const register: Register = on => {
 
     const themeText = await $.fs.read(await homeThemePath($)).catch(() => undefined)
     const theme = themeText ? plain(normalizeTheme(parseJson(themeText))) : null
-    const root = await findRoot($)
+    // A project the session settled on (by working in it, or arch_update's
+    // root) survives a reload or resume; only a guess is made again.
+    const stored = (await read($, rootAtom)) && !(await read($, rootGuessAtom)) ? await currentRoot($) : ''
+    const kept = stored && (await $.fs.exists(stored).catch(() => false)) ? stored : ''
+    const root = kept || (await findRoot($))
     const graph = await loadGraph($, root).catch(() => null)
     await update($, themeAtom, () => theme)
     await update($, rootAtom, () => root)
-    await update($, rootGuessAtom, () => root !== e.cwd)
-    await switchGraph($, graph)
+    if (!kept) await update($, rootGuessAtom, () => root !== e.cwd)
+    if (root === stored) await update($, graphAtom, () => graph)
+    else await switchGraph($, graph)
 
     const isProject = (await Promise.all(PROJECT_MARKERS.map(m => $.fs.exists(m)))).some(Boolean)
     const isDismissed = (await $.store.get(`dismissed:${e.cwd}`)) === true
@@ -1846,7 +1865,7 @@ export const register: Register = on => {
       const { Box, Markdown, Button } = $.ui.resolve(e)
       return (
         <Box flexDirection="column">
-          <Markdown text={outline(graph)} />
+          <Markdown text={fitText(outline(graph))} />
           <Box flexDirection="row" flexWrap="wrap" columnGap={1}>
             {linked.map(n => (
               <Button key={`open:${n.id}`} label={n.label} dimColor onPress={() => openInEditor($, n.path ?? '', n.line)} />
@@ -1900,7 +1919,7 @@ export const register: Register = on => {
           {written?.markdown ? (
             <Text key="standup-written" dimColor>{`Written by Claude · ${written.scope ?? 'all sessions'} · ${dayLabel(written.at ?? 0)} ${timeLabel(written.at ?? 0)}`}</Text>
           ) : null}
-          <Markdown text={shown} />
+          <Markdown text={fitText(shown)} />
           {past.length ? <Text key="standup-past-title" dimColor>{'Past standups (all in the notepad\'s History)'}</Text> : null}
           {past.map(a => (
             <Button
@@ -1987,7 +2006,7 @@ export const register: Register = on => {
             </Box>
           ))}
           <Text bold>{nameOf(chosen)}</Text>
-          <Markdown text={jday ? dayMarkdown(jday, labels) : '_Loading…_'} />
+          <Markdown text={jday ? fitText(dayMarkdown(jday, labels), 'end') : '_Loading…_'} />
           <Box flexDirection="row" gap={1} flexWrap="wrap">
             {chosen !== today && <Button key="carry-day" label="Carry this day forward" onPress={() => carryDay($, chosen)} />}
             <Button
@@ -2057,13 +2076,13 @@ export const register: Register = on => {
         {selected && graph ? (
           <Box key="map-card" flexDirection="column" gap={1} borderStyle="round" paddingX={1}>
             <Markdown
-              text={componentCard(selected, graph, {
+              text={fitText(componentCard(selected, graph, {
                 isActive: active.includes(selected.id),
                 edits: recent[selected.id] && now - recent[selected.id]!.at < RECENT_MS ? recent[selected.id] : undefined,
                 tag: fresh?.added.includes(selected.id) ? 'NEW' : fresh?.changed.includes(selected.id) ? 'UPDATED' : '',
                 mark: marks[selected.id],
                 now,
-              })}
+              }))}
             />
             <Box flexDirection="row" flexWrap="wrap" gap={1}>
               <Button
