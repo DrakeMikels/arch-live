@@ -227,6 +227,13 @@ const renderDiagram = async () => {
   if (next.error) return
   mapData = next
   loadDrift()
+  // Opened or closed in the pane: take that over.
+  const shared = next.view?.open
+  if (Array.isArray(shared) && (shared.length !== openSet.size || shared.some(id => !openSet.has(id)))) {
+    openSet.clear()
+    for (const id of shared) openSet.add(id)
+    keepOpen()
+  }
   for (const id of [...openSet]) if (!mapData.nodes.some(n => n.id === id)) openSet.delete(id)
   if (!mapView.isFitted) { mapView.isFitted = true; return fitMap() }
   animateMap(drawer?.id)

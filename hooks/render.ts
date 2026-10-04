@@ -39,6 +39,8 @@ const grid = (n: number) => Math.ceil(n / 4) * 4
 const esc = (s: string) =>
   s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
 const clip = (s: string, max: number) => (s.length > max ? `${s.slice(0, max - 1)}…` : s)
+// A component id as it may appear in an SVG id and a CSS selector.
+const cssId = (id: string) => id.replace(/[^a-zA-Z0-9_-]/g, '_')
 
 type Roles = Record<string, string>
 
@@ -83,6 +85,26 @@ const nodeWidth = (n: ArchNode) =>
     ),
   )
 
+// An open component lists its parts under its name, one to a row and
+// numbered as in the notepad: it grows taller, barely wider, so opening one
+// leaves the rest of the map where it was.
+const PART_H = 24
+const PART_GAP = 6
+const OPEN_W = 216
+
+const partsOf = (n: ArchNode) => n.breakdown?.parts ?? []
+
+const sizeOf = (n: ArchNode, isOpen: boolean) => {
+  if (!isOpen) return { w: nodeWidth(n), h: NODE_H }
+  const rows = Math.max(1, partsOf(n).length)
+  return { w: Math.max(nodeWidth(n), OPEN_W), h: NODE_H + rows * (PART_H + PART_GAP) + 6 }
+}
+
+const ago = (ms: number) => {
+  const min = Math.round(ms / 60_000)
+  return min < 1 ? 'just now' : min === 1 ? '1 min ago' : `${min} min ago`
+}
+
 type Point = [number, number]
 
 // Orthogonal polyline through `points`, every corner rounded to r<=8.
@@ -115,12 +137,29 @@ const spread = (count: number, index: number, step: number, limit: number) =>
   Math.max(-limit, Math.min(limit, (index - (count - 1) / 2) * step))
 
 // A node placed in flow coordinates: u runs along the flow, v across it.
-type Placed = ArchNode & { tier: number; u0: number; u1: number; v0: number; v1: number }
+type Placed = ArchNode & { tier: number; u0: number; u1: number; v0: number; v1: number; rowEnd: number }
 
 export type Drawing = { svg: string; alt: string; width: number; height: number; orientation: Orientation }
 
-/** What is drawn over the map: today's marks (component → note) and where Claude is working. */
-export type Overlay = { marks?: Record<string, string>; active?: string[]; ids?: boolean }
+/** What is drawn over the map: marks (component → note), where Claude is working, and what changed. */
+export type Overlay = {
+  marks?: Record<string, string>
+  active?: string[]
+  ids?: boolean
+  /** Components drawn open, their parts inside. */
+  open?: string[]
+  /** The component the pane's card shows, outlined. */
+  selected?: string
+  /** What the latest map update added or changed, tagged for a while. */
+  fresh?: { added: string[]; changed: string[] }
+  /** Components edited lately: how many edits and when the last was. */
+  recent?: Record<string, { edits: number; at: number }>
+  /** Now, to fade the edit counts as they age. */
+  now?: number
+}
+
+// Edit counts fade over this long, then go.
+export const RECENT_MS = 30 * 60_000
 
 // A small deterministic wobble, so a mark looks drawn by hand but stays put.
 const wobble = (seed: string, i: number) => {
@@ -168,12 +207,16 @@ const layout = (graph: ArchGraph | null, theme: ArchTheme, orientation: Orientat
     return rows
   })
 
-  // Horizontal: a tier is a column as wide as its widest node, each node
-  // NODE_H across. Vertical: a tier is a row NODE_H tall, each node its width.
-  const across = (n: ArchNode) => (isVertical ? nodeWidth(n) : NODE_H)
+  // Horizontal: a tier is a column as wide as its widest node, each node as
+  // tall as it is. Vertical: a tier is a row as tall as its tallest node, each
+  // node its width. A closed node is NODE_H tall; an open one holds its parts.
+  const open = new Set(overlay.open ?? [])
+  const size = (n: ArchNode) => sizeOf(n, open.has(n.id))
+  const across = (n: ArchNode) => (isVertical ? size(n).w : size(n).h)
+  const along = (n: ArchNode) => (isVertical ? size(n).h : size(n).w)
   let cursor = 0
   tiers.forEach((t, i) => {
-    t.size = isVertical ? NODE_H : Math.max(...t.nodes.map(nodeWidth))
+    t.size = Math.max(...t.nodes.map(along))
     t.gapBefore = i === 0 ? 0 : t.isFirst ? gap.along : WRAP_GAP
     cursor += t.gapBefore
     t.u0 = cursor
@@ -191,11 +234,17 @@ const layout = (graph: ArchGraph | null, theme: ArchTheme, orientation: Orientat
   tiers.forEach((t, tier) => {
     let at = grid((acrossLen - tierLen(t)) / 2)
     for (const n of t.nodes) {
-      const size = across(n)
-      placed.set(n.id, { ...n, tier, u0: t.u0, u1: t.u0 + t.size, v0: at, v1: at + size })
-      at += size + gap.across
+      const room = across(n)
+      // A column's boxes share its width; a row's boxes keep their own height.
+      const u1 = isVertical ? t.u0 + along(n) : t.u0 + t.size
+      placed.set(n.id, { ...n, tier, u0: t.u0, u1, v0: at, v1: at + room, rowEnd: t.u0 + t.size })
+      at += room + gap.across
     }
   })
+  const boxOf = (n: Placed) => {
+    const [x, y] = toXY([n.u0, n.v0])
+    return { x, y, w: isVertical ? n.v1 - n.v0 : n.u1 - n.u0, h: isVertical ? n.u1 - n.u0 : n.v1 - n.v0 }
+  }
 
   const bx = MARGIN
   const by = MARGIN + TITLE_H + HEAD_H
@@ -213,7 +262,7 @@ const layout = (graph: ArchGraph | null, theme: ArchTheme, orientation: Orientat
     if (!s || !d || s.id === d.id) continue
     if (s.tier < d.tier) routes.push({ edge, s, d, sEnd: 1, dEnd: 0, gap: `g${d.tier - 1}`, mid: d.u0 - gapBefore(d.tier) / 2 })
     else if (s.tier > d.tier) routes.push({ edge, s, d, sEnd: 0, dEnd: 1, gap: `g${d.tier}`, mid: d.u1 + gapAfter(d.tier) / 2 })
-    else routes.push({ edge, s, d, sEnd: 1, dEnd: 1, gap: `loop${s.tier}`, mid: s.u1 + 20 })
+    else routes.push({ edge, s, d, sEnd: 1, dEnd: 1, gap: `loop${s.tier}`, mid: s.rowEnd + 20 })
   }
 
   // Ports: endpoints sharing a node face spread out, ordered by the far end.
@@ -238,10 +287,7 @@ const layout = (graph: ArchGraph | null, theme: ArchTheme, orientation: Orientat
   const arrows: string[] = []
   const labels: string[] = []
   type Rect = { x: number; y: number; w: number; h: number }
-  const taken: Rect[] = [...placed.values()].map(n => {
-    const [x, y] = toXY([n.u0, n.v0])
-    return { x, y, w: isVertical ? n.v1 - n.v0 : n.u1 - n.u0, h: NODE_H }
-  })
+  const taken: Rect[] = [...placed.values()].map(boxOf)
   const overlaps = (a: Rect) => taken.some(b => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h)
   for (const r of routes) {
     const group = lanes.get(r.gap) ?? [r]
@@ -285,7 +331,7 @@ const layout = (graph: ArchGraph | null, theme: ArchTheme, orientation: Orientat
     const dash = style === 'async' ? ' stroke-dasharray="4,3"' : ''
     const weight = style === 'async' ? 1 : 1.2
     arrows.push(
-      `<path d="${ortho(points.map(toXY))}" fill="none" style="stroke:${v(color)}" stroke-width="${weight}"${dash} marker-end="url(#arrow-${color})"/>`,
+      `<path class="e e-${cssId(r.s.id)} e-${cssId(r.d.id)}" d="${ortho(points.map(toXY))}" fill="none" style="stroke:${v(color)}" stroke-width="${weight}"${dash} marker-end="url(#arrow-${color})"/>`,
     )
     if (r.edge.label) {
       const text = clip(r.edge.label.toUpperCase(), 18)
@@ -303,43 +349,136 @@ const layout = (graph: ArchGraph | null, theme: ArchTheme, orientation: Orientat
     }
   }
 
-  const boxes = [...placed.values()].map(n => {
-    const [x, y] = toXY([n.u0, n.v0])
-    const w = isVertical ? n.v1 - n.v0 : n.u1 - n.u0
-    const s = shape(n, focus.has(n.id))
-    const tip = n.path ? `${n.label} — ${n.path}${n.line ? `:${n.line}` : ''}` : n.label
-    const nameY = n.sublabel ? y + 38 : y + 42
+  const active = new Set(overlay.active ?? [])
+  const marks = Object.entries(overlay.marks ?? {})
+  const fresh = overlay.fresh ?? { added: [], changed: [] }
+  const now = overlay.now ?? 0
+  const recentOf = (id: string) => {
+    const r = overlay.recent?.[id]
+    return r && now - r.at < RECENT_MS ? r : undefined
+  }
+  const tagOf = (id: string) => (fresh.added.includes(id) ? 'NEW' : fresh.changed.includes(id) ? 'UPDATED' : '')
+
+  // What a pointer resting on a component shows: what it is and what is
+  // happening in it.
+  const tipOf = (n: Placed) => {
+    const parts = partsOf(n).length
+    const described = Object.keys(n.files ?? {}).length
+    const edits = recentOf(n.id)
+    const mark = marks.find(([id]) => id === n.id)?.[1]
+    const tag = tagOf(n.id)
     return [
-      `<g${overlay.ids ? ` data-id="${esc(n.id)}" style="cursor:pointer"` : ''}><title>${esc(tip)}</title>`,
-      `<rect x="${x}" y="${y}" width="${w}" height="${NODE_H}" rx="6" style="fill:${v(s.fill)};stroke:${v(s.stroke)}" stroke-width="1"${s.dash ? ` stroke-dasharray="${s.dash}"` : ''}/>`,
-      `<text x="${x + 14}" y="${y + 18}" font-family="${esc(f.mono)}" font-size="${TYPE.eyebrow}" font-weight="500" letter-spacing="0.18em" style="fill:${v(focus.has(n.id) ? 'accent' : 'soft')}">${n.kind.toUpperCase()}</text>`,
+      `${n.label} · ${n.kind}`,
+      n.sublabel,
+      n.path ? `${n.path}${n.line ? `:${n.line}` : ''}` : undefined,
+      parts ? `${parts} parts${open.has(n.id) ? '' : ', open it to see them'}` : 'Not broken down yet',
+      described ? `${described} files described` : undefined,
+      active.has(n.id) ? 'Claude is working here now' : undefined,
+      edits ? `Edited ${edits.edits} time${edits.edits === 1 ? '' : 's'}, last ${ago(now - edits.at)}` : undefined,
+      tag === 'NEW' ? 'New in the latest map update' : tag ? 'Changed in the latest map update' : undefined,
+      mark ? `Mark: ${mark}` : undefined,
+    ]
+      .filter(Boolean)
+      .join('\n')
+  }
+
+  const boxes = [...placed.values()].map(n => {
+    const { x, y, w, h } = boxOf(n)
+    const s = shape(n, focus.has(n.id))
+    const isSelected = overlay.selected === n.id
+    const nameY = n.sublabel ? y + 38 : y + 42
+    const parts = partsOf(n)
+
+    // Status along the top right: working now, new or changed, recent edits.
+    const status: string[] = []
+    let right = x + w - 8
+    if (active.has(n.id)) {
+      status.push(
+        `<circle cx="${right - 4}" cy="${y + 14}" r="4" style="fill:${v('accent')}"><animate attributeName="opacity" values="1;0.25;1" dur="1.4s" repeatCount="indefinite"/></circle>`,
+      )
+      right -= 14
+    }
+    const tag = tagOf(n.id)
+    if (tag) {
+      const tw = tag.length * 6 + 10
+      status.push(
+        `<rect x="${right - tw}" y="${y + 8}" width="${tw}" height="12" rx="6" style="fill:${v('link')}"/>`,
+        `<text x="${right - tw / 2}" y="${y + 17}" text-anchor="middle" font-family="${esc(f.mono)}" font-size="7.5" font-weight="600" letter-spacing="0.08em" style="fill:${v('paper')}">${tag}</text>`,
+      )
+      right -= tw + 6
+    }
+    const edits = recentOf(n.id)
+    if (edits) {
+      const text = `✎${edits.edits}`
+      const fade = (1 - 0.65 * Math.min(1, (now - edits.at) / RECENT_MS)).toFixed(2)
+      status.push(
+        `<text x="${right}" y="${y + 18}" text-anchor="end" font-family="${esc(f.mono)}" font-size="9" font-weight="600" opacity="${fade}" style="fill:${v('accent')}">${text}</text>`,
+      )
+      right -= text.length * 6 + 6
+    }
+    const eyebrow = `${n.kind.toUpperCase()}${parts.length ? ` · ${parts.length} PARTS` : ''}`
+
+    const inside: string[] = []
+    if (open.has(n.id)) {
+      const pw = w - 28
+      inside.push(`<line x1="${x + 14}" y1="${y + NODE_H - 4}" x2="${x + w - 14}" y2="${y + NODE_H - 4}" style="stroke:${v('rule')}"/>`)
+      parts.forEach((p, i) => {
+        const px = x + 14
+        const py = y + NODE_H + 2 + i * (PART_H + PART_GAP)
+        const tip = [`${i + 1}. ${p.label}`, p.summary, p.path ? `${p.path}${p.line ? `:${p.line}` : ''}` : undefined].filter(Boolean).join('\n')
+        inside.push(
+          `<g class="p"><title>${esc(tip)}</title>`,
+          `<rect x="${px}" y="${py}" width="${pw}" height="${PART_H}" rx="4" style="fill:${v('paper')};stroke:${v('rule')}"/>`,
+          `<circle cx="${px + 12}" cy="${py + PART_H / 2}" r="7" style="fill:${v('accent')}"/>`,
+          `<text x="${px + 12}" y="${py + PART_H / 2 + 3}" text-anchor="middle" font-family="${esc(f.mono)}" font-size="8" font-weight="600" style="fill:${v('paper')}">${i + 1}</text>`,
+          `<text x="${px + 24}" y="${py + PART_H / 2 + 3.5}" font-family="${esc(f.sans)}" font-size="10" style="fill:${v('ink')}">${esc(clip(p.label, Math.floor((pw - 30) / 5.4)))}</text>`,
+          '</g>',
+        )
+      })
+      if (!parts.length) {
+        inside.push(
+          `<text x="${x + 14}" y="${y + NODE_H + 18}" font-family="${esc(f.sans)}" font-size="10" font-style="italic" style="fill:${v('muted')}">Not broken down yet</text>`,
+        )
+      }
+    }
+
+    return [
+      `<g class="n" id="al-n-${cssId(n.id)}"${overlay.ids ? ` data-id="${esc(n.id)}" style="cursor:pointer"` : ''}><title>${esc(tipOf(n))}</title>`,
+      `<rect class="box" x="${x}" y="${y}" width="${w}" height="${h}" rx="6" style="fill:${v(s.fill)};stroke:${v(isSelected ? 'accent' : s.stroke)}" stroke-width="${isSelected ? 2 : 1}"${s.dash ? ` stroke-dasharray="${s.dash}"` : ''}/>`,
+      `<text x="${x + 14}" y="${y + 18}" font-family="${esc(f.mono)}" font-size="${TYPE.eyebrow}" font-weight="500" letter-spacing="0.18em" style="fill:${v(focus.has(n.id) ? 'accent' : 'soft')}">${esc(clip(eyebrow, Math.max(4, Math.floor((right - x - 18) / 7.8))))}</text>`,
       `<text x="${x + 14}" y="${nameY}" font-family="${esc(f.sans)}" font-size="${TYPE.name}" font-weight="600" style="fill:${v('ink')}">${esc(clip(n.label, Math.floor((w - 28) / ADVANCE.name)))}</text>`,
       n.sublabel
         ? `<text x="${x + 14}" y="${y + 54}" font-family="${esc(f.mono)}" font-size="${TYPE.sub}" style="fill:${v('muted')}">${esc(clip(n.sublabel, Math.floor((w - 28) / ADVANCE.sub)))}</text>`
         : '',
+      ...status,
+      ...inside,
       '</g>',
     ].join('')
   })
 
-  const active = new Set(overlay.active ?? [])
-  const marks = Object.entries(overlay.marks ?? {})
   const overlays = [...placed.values()].flatMap(n => {
-    const [x, y] = toXY([n.u0, n.v0])
-    const w = isVertical ? n.v1 - n.v0 : n.u1 - n.u0
+    const { x, y, w, h } = boxOf(n)
     const out: string[] = []
+    // Where Claude is working now: a ring that breathes.
     if (active.has(n.id)) {
       out.push(
-        `<circle cx="${x + w - 10}" cy="${y + 10}" r="4" style="fill:${v('accent')}"><animate attributeName="opacity" values="1;0.25;1" dur="1.4s" repeatCount="indefinite"/></circle>`,
+        `<rect x="${x - 4}" y="${y - 4}" width="${w + 8}" height="${h + 8}" rx="9" fill="none" style="stroke:${v('accent')}" stroke-width="2"><animate attributeName="opacity" values="0.9;0.15;0.9" dur="1.6s" repeatCount="indefinite"/></rect>`,
+      )
+    }
+    // New or changed in the latest map update: a ring that flashes, then stays faint.
+    if (tagOf(n.id)) {
+      out.push(
+        `<rect x="${x - 2}" y="${y - 2}" width="${w + 4}" height="${h + 4}" rx="7" fill="none" style="stroke:${v('link')}" stroke-width="1.5" opacity="0.45"><animate attributeName="opacity" values="1;0.2;1" dur="0.9s" repeatCount="3"/></rect>`,
       )
     }
     const mark = marks.find(([id]) => id === n.id)
     if (mark) {
-      out.push(`<path d="${sketchLoop(n.id, x, y, w, NODE_H)}" fill="none" style="stroke:${v('accent')}" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" opacity="0.85"/>`)
+      out.push(`<path d="${sketchLoop(n.id, x, y, w, h)}" fill="none" style="stroke:${v('accent')}" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" opacity="0.85"/>`)
       if (mark[1]) {
         const text = clip(mark[1], 34)
         // Beside the box when there is room, else under it.
         const fits = x + w + 18 + text.length * 6.6 < width - 8
-        const [tx, ty] = fits ? [x + w + 18, y - 6] : [x, y + NODE_H + 26]
+        const [tx, ty] = fits ? [x + w + 18, y - 6] : [x, y + h + 26]
         out.push(
           `<text x="${tx}" y="${ty}" font-family="${esc(f.sans)}" font-size="11" font-style="italic" style="fill:${v('accent')}">${esc(text)}</text>`,
         )
@@ -368,10 +507,18 @@ const layout = (graph: ArchGraph | null, theme: ArchTheme, orientation: Orientat
   const light = vars(roles(theme.light))
   const dark = vars(roles(theme.dark))
   const forced = `[data-theme="light"] svg{${light}}[data-theme="dark"] svg{${dark}}`
+  // Where the SVG is drawn live (the pane's frame, a browser), the pointer on a
+  // component outlines it and lights its connections; elsewhere these do nothing.
+  const hover = [
+    '.n:hover>.box{stroke:var(--accent)!important;stroke-width:2}',
+    '.p:hover>rect{stroke:var(--accent)!important}',
+    'svg:has(.n:hover) .e{opacity:.3}',
+    ...[...placed.keys()].map(id => `svg:has(#al-n-${cssId(id)}:hover) .e-${cssId(id)}{opacity:1;stroke:var(--accent)!important;stroke-width:2}`),
+  ].join('')
   const css =
-    theme.mode === 'auto'
+    (theme.mode === 'auto'
       ? `svg{${light}}@media (prefers-color-scheme: dark){svg{${dark}}}${forced}`
-      : `svg{${vars(base)}}${forced}`
+      : `svg{${vars(base)}}${forced}`) + hover
 
   const marker = (color: string) =>
     `<marker id="arrow-${color}" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L8,4 L0,8 z" style="fill:${v(color)}"/></marker>`

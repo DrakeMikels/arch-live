@@ -18,7 +18,10 @@ const mapPrefs = (() => {
 const savePrefs = () => { try { localStorage.setItem(`arch-live-mapprefs:${token}`, JSON.stringify(mapPrefs)) } catch {} }
 const elk = typeof ELK === 'function' ? new ELK() : null
 const openSet = (() => { try { return new Set(JSON.parse(localStorage.getItem(`arch-live-open:${token}`) || '[]')) } catch { return new Set() } })()
-const saveOpen = () => { try { localStorage.setItem(`arch-live-open:${token}`, JSON.stringify([...openSet])) } catch {} }
+const keepOpen = () => { try { localStorage.setItem(`arch-live-open:${token}`, JSON.stringify([...openSet])) } catch {} }
+// The server keeps which components are open, so the Claude Code pane opens
+// and closes them with you.
+const saveOpen = () => { keepOpen(); api('/api/view', { open: [...openSet] }).catch(() => {}) }
 const TIER = { client: 0, edge: 1, service: 2, worker: 2, queue: 3, store: 4, external: 5 }
 const TIER_LABEL = ['CLIENTS', 'EDGE', 'SERVICES', 'MESSAGING', 'DATA', 'EXTERNAL']
 const M = { NW: 236, PW: 214, PAD: 16, GAP: 120, RGY: 28 }

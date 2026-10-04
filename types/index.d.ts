@@ -159,6 +159,9 @@ export type ArchAsk = 'theme' | 'brand' | 'map' | 'carry' | 'mark' | null
 
 export type PaneTab = 'diagram' | 'journal' | 'standup'
 
+/** What a change to the map added, changed (by id) or removed (by name), and when. */
+export type MapChange = { at: number; added: string[]; changed: string[]; removed: string[]; links: number }
+
 /** What the carry-forward offer shows and, once taken, hands Claude. */
 export type CarryOffer = { date: string; open: number; blockers: number; decisions: number; context: string }
 
@@ -190,6 +193,14 @@ declare module 'claude-code' {
       notepad: string | null
       /** When Re-map last asked Claude, until the map is next updated. */
       mapAskedAt: number | null
+      /** Components drawn open in place; the notepad shares this through map-view.json. */
+      mapOpen: string[]
+      /** The component the pane's card shows. */
+      mapSel: string | null
+      /** The latest change to the map, whoever made it. */
+      mapChange: MapChange | null
+      /** Bumped each minute, so the pane redraws what fades with time. */
+      paneClock: number
     }
   }
 }

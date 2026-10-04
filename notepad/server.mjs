@@ -592,7 +592,15 @@ const server = http.createServer(async (req, res) => {
       const marks = {}
       for (const e of recent().flatMap(d => d.entries).sort((a, b) => a.ts - b.ts)) if (e.type === 'mark' && e.component && !e.done) marks[e.component] = e.text === '·' ? 'marked' : e.text
       const arrangement = readJson(path.join(LOGS, 'map-layout.json'), null)
-      return send(res, 200, { ...(await workspace.map()), marks, active: meta().active ?? [], arrangement })
+      const view = readJson(path.join(LOGS, 'map-view.json'), null)
+      return send(res, 200, { ...(await workspace.map()), marks, active: meta().active ?? [], arrangement, view })
+    }
+    // Which components are open in place: the pane reads and writes the same file.
+    if (req.method === 'POST' && url.pathname === '/api/view') {
+      const { open } = await readBody(req)
+      const list = [...new Set((Array.isArray(open) ? open : []).filter(isId))].slice(0, 500)
+      fs.writeFileSync(path.join(LOGS, 'map-view.json'), `${JSON.stringify({ open: list, updatedAt: Date.now() }, null, 2)}\n`)
+      return send(res, 200, { ok: true })
     }
     // Your own arrangement of the map: component positions, kept with the journal.
     if (req.method === 'POST' && url.pathname === '/api/arrangement') {

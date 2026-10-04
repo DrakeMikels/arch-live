@@ -17,6 +17,7 @@ import type {
   JournalNoteType,
   JournalSession,
   ArchPart,
+  MapChange,
   PaneTab,
 } from '../types'
 import {
@@ -39,7 +40,7 @@ import {
   standupDetail,
   timeLabel,
 } from './journal'
-import { outline, popoutHtml, renderSvg } from './render'
+import { outline, popoutHtml, RECENT_MS, renderSvg } from './render'
 import type { Overlay } from './render'
 import { distill } from './ste'
 import { DEFAULT_THEME, normalizeTheme, themeWarnings } from './theme'
@@ -104,6 +105,16 @@ const pendingAtom = atom({ plugin: 'arch-live', key: 'pending' } as const, null)
 const markTargetAtom = atom({ plugin: 'arch-live', key: 'markTarget' } as const, null)
 const notepadAtom = atom({ plugin: 'arch-live', key: 'notepad' } as const, null)
 const mapAskedAtom = atom({ plugin: 'arch-live', key: 'mapAskedAt' } as const, null)
+const mapOpenAtom = atom({ plugin: 'arch-live', key: 'mapOpen' } as const, [])
+const mapSelAtom = atom({ plugin: 'arch-live', key: 'mapSel' } as const, null)
+const mapChangeAtom = atom({ plugin: 'arch-live', key: 'mapChange' } as const, null)
+const paneClockAtom = atom({ plugin: 'arch-live', key: 'paneClock' } as const, 0)
+
+// How long the drawing tags what the latest map change added or changed.
+const FRESH_MS = 15 * 60_000
+// Which components are open in place, beside the journal: the pane and the
+// notepad both read and write it, so they open and close together.
+const VIEW_FILE = 'map-view.json'
 
 // A pane button's work, with any failure said in a toast instead of lost.
 const act = ($: EngineInterface, what: string, work: () => Promise<unknown>) =>
@@ -341,7 +352,8 @@ const findRoot = async ($: EngineInterface): Promise<string> => {
 const reloadAfter = async ($: EngineInterface, filePath: string) => {
   if (!filePath.endsWith(GRAPH_FILE)) return
   const graph = await loadGraph($, await currentRoot($)).catch(() => null)
-  await update($, graphAtom, () => graph)
+  if (graph) await setGraph($, graph)
+  else await switchGraph($, null)
   await writePopout($, graph, await currentTheme($))
 }
 
@@ -567,6 +579,8 @@ const ensureNotepad = async ($: EngineInterface): Promise<string | undefined> =>
 // the journal, and takes over the notepad when the session serving it goes.
 let booted = false
 let journalSig = ''
+let mapSig = ''
+let viewSig = ''
 let ticks = 0
 const boot = ($: EngineInterface) => {
   if (booted) return
@@ -595,6 +609,27 @@ const tick = async ($: EngineInterface) => {
     const isFirst = journalSig === ''
     journalSig = sig
     if (!isFirst) await refreshJournal($)
+  }
+  // The map file, whoever saved it (another session, the notepad, your
+  // editor, git): the pane redraws and tags what changed.
+  const root = await currentRoot($)
+  const mapStamp = await $.fs.stat(inRoot(root, GRAPH_FILE)).then(st => st.mtimeMs, () => 0)
+  if (`${root}|${mapStamp}` !== mapSig) {
+    const isSameRoot = mapSig.startsWith(`${root}|`)
+    mapSig = `${root}|${mapStamp}`
+    const graph = mapStamp ? await loadGraph($, root).catch(() => null) : null
+    if (graph) await setGraph($, graph, !isSameRoot)
+  }
+  // Components opened or closed in the notepad open and close here too.
+  const viewStamp = await $.fs.stat(`${dir}/${VIEW_FILE}`).then(st => st.mtimeMs, () => 0)
+  if (`${dir}|${viewStamp}` !== viewSig) {
+    viewSig = `${dir}|${viewStamp}`
+    const open = await readOpen($)
+    if (canon(open) !== canon(await read($, mapOpenAtom))) await update($, mapOpenAtom, () => open)
+  }
+  if (ticks % 30 === 0) {
+    const now = await $.clock.now()
+    await update($, paneClockAtom, () => now)
   }
   if (ticks % 5 === 1 && (await read($, graphAtom))) await ensureNotepad($)
 }
@@ -851,11 +886,13 @@ const refreshAll = async ($: EngineInterface) => {
   const kept = !isGuess && (await read($, rootAtom)) ? await currentRoot($) : undefined
   const root = kept ?? (await findRoot($))
   const graph = await loadGraph($, root).catch(() => null)
+  const isSameRoot = root === (await currentRoot($))
   await update($, themeAtom, () => theme)
   await update($, rootAtom, () => root)
   const cwd = await $.session.cwd()
   if (!kept) await update($, rootGuessAtom, () => root !== cwd)
-  await update($, graphAtom, () => graph)
+  if (graph && isSameRoot) await setGraph($, graph)
+  else await switchGraph($, graph)
   await refreshJournal($).catch(() => undefined)
   await writePopout($, graph, theme ?? DEFAULT_THEME).catch(() => undefined)
   $.ui.toast(graph ? `arch-live: refreshed (${graph.nodes.length} components)` : 'arch-live: refreshed, no map found')
@@ -1143,7 +1180,8 @@ const followWork = async ($: EngineInterface, done: TurnDraft) => {
   const graph = next === root ? await read($, graphAtom) : await loadGraph($, next).catch(() => null)
   await update($, rootAtom, () => next)
   await update($, rootGuessAtom, () => false)
-  await update($, graphAtom, () => graph)
+  if (next === root) await update($, graphAtom, () => graph)
+  else await switchGraph($, graph)
   const files = new Map<string, JournalFile>()
   const before = [...done.files.values()]
   abs.forEach((p, i) => {
@@ -1197,10 +1235,160 @@ const closeById = async ($: EngineInterface, id: string) => {
   await appendEntry($, { id: newId(now), ts: now, type: 'done', ref: id, by: 'you' })
 }
 
+// JSON with every object's keys in order, so two copies of one map compare equal.
+const canon = (value: unknown) =>
+  JSON.stringify(value, (_key, v: unknown) =>
+    v && typeof v === 'object' && !Array.isArray(v) ? Object.fromEntries(Object.entries(v).sort(([a], [b]) => a.localeCompare(b))) : v,
+  )
+
+// What changed between two versions of the map, or null when nothing did.
+const mapDiff = (before: ArchGraph | null, after: ArchGraph, at: number): MapChange | null => {
+  if (!before) return null
+  const old = new Map(before.nodes.map(n => [n.id, n]))
+  const ids = new Set(after.nodes.map(n => n.id))
+  const sig = (n: ArchNode) => canon({ ...n, order: 0 })
+  const added = after.nodes.filter(n => !old.has(n.id)).map(n => n.id)
+  const changed = after.nodes.filter(n => old.has(n.id) && sig(n) !== sig(old.get(n.id)!)).map(n => n.id)
+  const removed = before.nodes.filter(n => !ids.has(n.id)).map(n => n.label)
+  const key = (e: ArchEdge) => `${e.from}>${e.to}|${e.label ?? ''}|${e.style ?? ''}`
+  const had = new Set(before.edges.map(key))
+  const has = new Set(after.edges.map(key))
+  const links = [...has].filter(k => !had.has(k)).length + [...had].filter(k => !has.has(k)).length
+  return added.length || changed.length || removed.length || links ? { at, added, changed, removed, links } : null
+}
+
+// Changes close together read as one: what was added stays "new" while it
+// is edited further.
+const mergeChange = (prev: MapChange | null, next: MapChange): MapChange => {
+  if (!prev || next.at - prev.at > FRESH_MS) return next
+  const added = [...new Set([...prev.added, ...next.added])]
+  return {
+    at: next.at,
+    added,
+    changed: [...new Set([...prev.changed, ...next.changed])].filter(id => !added.includes(id)),
+    removed: [...new Set([...prev.removed, ...next.removed])],
+    links: prev.links + next.links,
+  }
+}
+
+// Sets the map the pane draws and notes what changed, whoever changed it.
+// A copy equal to the one shown changes nothing; `quiet` takes it without a note.
+const setGraph = async ($: EngineInterface, next: ArchGraph, quiet = false) => {
+  const before = await read($, graphAtom)
+  if (before && canon(before) === canon(next)) return
+  await update($, graphAtom, () => next)
+  const change = quiet ? null : mapDiff(before, next, await $.clock.now())
+  if (change) await update($, mapChangeAtom, prev => mergeChange(prev, change))
+}
+
+// A different project's map: nothing in it is "new" here.
+const switchGraph = async ($: EngineInterface, graph: ArchGraph | null) => {
+  await update($, graphAtom, () => graph)
+  await update($, mapChangeAtom, () => null)
+  await update($, mapSelAtom, () => null)
+}
+
+const readOpen = async ($: EngineInterface): Promise<string[]> => {
+  const raw = parseJson(await $.fs.read(`${await logsDir($)}/${VIEW_FILE}`).catch(() => '')) as { open?: unknown } | undefined
+  return Array.isArray(raw?.open) ? raw.open.filter((id): id is string => typeof id === 'string') : []
+}
+
+const saveOpen = async ($: EngineInterface, open: string[]) => {
+  const list = [...new Set(open)]
+  await update($, mapOpenAtom, () => list)
+  await $.fs.write(`${await logsDir($)}/${VIEW_FILE}`, `${JSON.stringify({ open: list, updatedAt: await $.clock.now() }, null, 2)}\n`)
+}
+
+type RecentEdits = Record<string, { edits: number; at: number; files: Record<string, number> }>
+
+// Edits by component over the last half hour: logged turns, plus the turn
+// running now.
+const recentEdits = (graph: ArchGraph | null, days: JournalDay[], now: number): RecentEdits => {
+  const out: RecentEdits = {}
+  const add = (path: string, edits: number, at: number) => {
+    const id = componentFor(graph, path)
+    if (!id) return
+    const one = (out[id] ??= { edits: 0, at: 0, files: {} })
+    one.edits += edits
+    one.at = Math.max(one.at, at)
+    one.files[path] = (one.files[path] ?? 0) + edits
+  }
+  for (const e of days.flatMap(d => d.entries)) {
+    if (e.type !== 'turn' || now - e.ts > RECENT_MS) continue
+    for (const f of e.files) add(f.path, f.edits, e.ts)
+  }
+  for (const f of turn?.files.values() ?? []) add(f.path, f.edits, now)
+  return out
+}
+
+// A component pressed in the pane, as a click in the notepad: closed, it
+// opens and its card shows; open, its card shows; showing, it closes.
+const pressComponent = async ($: EngineInterface, id: string) => {
+  const open = await read($, mapOpenAtom)
+  const selected = await read($, mapSelAtom)
+  if (!open.includes(id)) {
+    await saveOpen($, [...open, id])
+    await update($, mapSelAtom, () => id)
+  } else if (selected !== id) {
+    await update($, mapSelAtom, () => id)
+  } else {
+    await saveOpen($, open.filter(x => x !== id))
+    await update($, mapSelAtom, () => null)
+  }
+}
+
+const changeText = (change: MapChange, graph: ArchGraph | null) => {
+  const name = (id: string) => graph?.nodes.find(n => n.id === id)?.label ?? id
+  return [
+    change.added.length ? `${change.added.length} new (${change.added.map(name).join(', ')})` : '',
+    change.changed.length ? `${change.changed.length} updated` : '',
+    change.removed.length ? `${change.removed.length} removed (${change.removed.join(', ')})` : '',
+    change.links ? `${change.links} link${change.links === 1 ? '' : 's'} changed` : '',
+  ]
+    .filter(Boolean)
+    .join(', ')
+}
+
+// The selected component, as the notepad's drawer has it: what it is, what
+// is happening in it, its connections and its parts.
+const componentCard = (n: ArchNode, graph: ArchGraph, facts: { isActive: boolean; edits?: RecentEdits[string]; tag: string; mark?: string; now: number }) => {
+  const name = (id: string) => graph.nodes.find(x => x.id === id)?.label ?? id
+  const calls = [...new Set(graph.edges.filter(e => e.from === n.id).map(e => name(e.to)))]
+  const callers = [...new Set(graph.edges.filter(e => e.to === n.id).map(e => name(e.from)))]
+  const parts = n.breakdown?.parts ?? []
+  const status = [
+    facts.isActive ? 'Claude is working here now' : '',
+    facts.edits ? `edited ${facts.edits.edits} time${facts.edits.edits === 1 ? '' : 's'}, last at ${timeLabel(facts.edits.at)}` : '',
+    facts.tag === 'NEW' ? 'new in the latest map update' : facts.tag ? 'changed in the latest map update' : '',
+  ].filter(Boolean)
+  const described = Object.keys(n.files ?? {}).length
+  return [
+    `**${n.label}** · ${n.kind}${n.sublabel ? ` · ${n.sublabel}` : ''}`,
+    n.path ? `\`${n.path}${n.line ? `:${n.line}` : ''}\`` : '',
+    status.length ? `_${status.join(' · ')}_` : '',
+    facts.mark ? `◯ Mark: ${facts.mark}` : '',
+    calls.length ? `Calls ${calls.join(', ')}` : '',
+    callers.length ? `Called by ${callers.join(', ')}` : '',
+    facts.edits
+      ? `**Changed lately**\n${Object.entries(facts.edits.files)
+          .sort((a, b) => b[1] - a[1])
+          .slice(0, 6)
+          .map(([path, count]) => `- \`${path}\` · ${count} edit${count === 1 ? '' : 's'}`)
+          .join('\n')}`
+      : '',
+    parts.length
+      ? `**Parts**\n${parts.map((p, i) => `${i + 1}. **${p.label}**${p.summary ? ` · ${p.summary}` : ''}`).join('\n')}`
+      : '_Not broken down yet: Break down asks Claude for its parts._',
+    described ? `${described} file${described === 1 ? '' : 's'} described (the notepad's drawer lists them)` : '',
+  ]
+    .filter(Boolean)
+    .join('\n\n')
+}
+
 // Saves a changed node into the map file and the pane.
 const saveNode = async ($: EngineInterface, graph: ArchGraph, id: string, change: (n: ArchNode) => ArchNode) => {
   const next: ArchGraph = plain({ ...graph, nodes: graph.nodes.map(n => (n.id === id ? change(n) : n)) })
-  await update($, graphAtom, () => next)
+  await setGraph($, next)
   await $.fs.write(inRoot(await currentRoot($), GRAPH_FILE), `${JSON.stringify(next, null, 2)}\n`)
   await publishLive($).catch(() => undefined)
 }
@@ -1353,7 +1541,7 @@ export const register: Register = on => {
     await update($, themeAtom, () => theme)
     await update($, rootAtom, () => root)
     await update($, rootGuessAtom, () => root !== e.cwd)
-    await update($, graphAtom, () => graph)
+    await switchGraph($, graph)
 
     const isProject = (await Promise.all(PROJECT_MARKERS.map(m => $.fs.exists(m)))).some(Boolean)
     const isDismissed = (await $.store.get(`dismissed:${e.cwd}`)) === true
@@ -1404,7 +1592,7 @@ export const register: Register = on => {
       if (root !== (await currentRoot($))) {
         await update($, rootAtom, () => root)
         const existing = await loadGraph($, root).catch(() => null)
-        await update($, graphAtom, () => existing)
+        await switchGraph($, existing)
       }
     }
     const root = await currentRoot($)
@@ -1417,7 +1605,7 @@ export const register: Register = on => {
       turn.removed.push(...(before?.nodes ?? []).filter(n => !has.has(n.id)).map(n => n.label))
     }
     void saveSnapshot($, graph, before).catch(() => undefined)
-    await update($, graphAtom, () => graph)
+    await setGraph($, graph)
     await update($, askAtom, ask => (ask === 'map' ? null : ask))
     await $.fs.write(inRoot(root, GRAPH_FILE), `${JSON.stringify(graph, null, 2)}\n`)
     await writePopout($, graph, await currentTheme($))
@@ -1444,16 +1632,20 @@ export const register: Register = on => {
 
   // Hand edits to the graph file (by Claude or by the person) redraw the pane.
   on('tool.call', { tool: 'Write' }, async ($, e, next) => {
-    const existed = await $.fs.exists(e.file_path).catch(() => true)
+    const file = typeof e.file_path === 'string' ? e.file_path : ''
+    const existed = file ? await $.fs.exists(file).catch(() => true) : true
     const ran = await next(e)
-    await reloadAfter($, e.file_path)
-    if (ran.deny === undefined && !ran.isError) await recordFile($, e.file_path, !existed)
+    if (!file) return ran
+    await reloadAfter($, file)
+    if (ran.deny === undefined && !ran.isError) await recordFile($, file, !existed)
     return ran
   })
   on('tool.call', { tool: 'Edit' }, async ($, e, next) => {
+    const file = typeof e.file_path === 'string' ? e.file_path : ''
     const ran = await next(e)
-    await reloadAfter($, e.file_path)
-    if (ran.deny === undefined && !ran.isError) await recordFile($, e.file_path, false)
+    if (!file) return ran
+    await reloadAfter($, file)
+    if (ran.deny === undefined && !ran.isError) await recordFile($, file, false)
     return ran
   })
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
@@ -1466,16 +1658,21 @@ export const register: Register = on => {
   on('prompt.submit', async ($, e, next) => {
     boot($)
     const pending = await read($, pendingAtom)
-    const isTyped = e.text.trim() !== '' && !e.text.trim().startsWith('/')
+    // A background task's notice arrives as a prompt too; it is not the person's request.
+    const isNotice = e.text.trim().startsWith('<task-notification>')
+    const isTyped = e.text.trim() !== '' && !e.text.trim().startsWith('/') && !isNotice
     const result = await next(pending && isTyped ? { ...e, context: [...(e.context ?? []), pending] } : e)
     if (pending && isTyped && result.drop === undefined) await update($, pendingAtom, () => null)
-    if (result.drop === undefined && e.text.trim() && !e.text.trim().startsWith('/')) {
-      const first = distill(e.text, { mode: 'request', max: 1 }).statements[0]?.text ?? e.text
-      const name = first.replace(/\s+/g, ' ').trim().slice(0, 48)
-      await changeSession($, s => (s.isNamed || s.name ? s : { ...s, name })).catch(() => undefined)
+    if (result.drop === undefined && (isTyped || isNotice)) {
+      if (isTyped) {
+        const first = distill(e.text, { mode: 'request', max: 1 }).statements[0]?.text ?? e.text
+        const name = first.replace(/\s+/g, ' ').trim().slice(0, 48)
+        await changeSession($, s => (s.isNamed || s.name ? s : { ...s, name })).catch(() => undefined)
+      }
+      // A notice's turn still counts its edits, under a plain request.
       turn = {
         ts: await $.clock.now(),
-        request: e.text,
+        request: isNotice ? 'A background task finished.' : e.text,
         files: new Map(),
         components: new Set(),
         commands: 0,
@@ -1526,7 +1723,7 @@ export const register: Register = on => {
     const files = { ...(node.files ?? {}) }
     for (const f of given) files[cleanRoot(f.path)] = { summary: String(f.summary).trim().slice(0, 160), at: now }
     const next: ArchGraph = plain({ ...graph, nodes: graph.nodes.map(n => (n.id === node.id ? { ...n, files } : n)) })
-    await update($, graphAtom, () => next)
+    await setGraph($, next)
     await $.fs.write(inRoot(await currentRoot($), GRAPH_FILE), `${JSON.stringify(next, null, 2)}\n`)
     return { result: `Saved ${given.length} file summar${given.length === 1 ? 'y' : 'ies'} for ${node.label}.` }
   })
@@ -1806,37 +2003,95 @@ export const register: Register = on => {
     // Sized to the pane: the layout is chosen to fill its width, and the
     // drawing is given that width (and its own height) so nothing letterboxes.
     const room = Math.max(280, e.props.bodyColumns * CELL_PX - 16)
-    const overlay: Overlay = { marks: marksOf(await recentDays($)), active }
+    // Redrawn each minute as well as on every change, so what fades with time does.
+    await read($, paneClockAtom)
+    const now = await $.clock.now()
+    const days = await recentDays($)
+    const nodes = [...(graph?.nodes ?? [])].sort((a, b) => a.order - b.order)
+    const open = (await read($, mapOpenAtom)).filter(id => nodes.some(n => n.id === id))
+    const selectedId = await read($, mapSelAtom)
+    const selected = nodes.find(n => n.id === selectedId)
+    const change = await read($, mapChangeAtom)
+    const fresh = change && now - change.at < FRESH_MS ? change : null
+    const recent = recentEdits(graph, days, now)
+    const marks = marksOf(days)
+    const overlay: Overlay = { marks, active, open, selected: selected?.id, fresh: fresh ?? undefined, recent, now }
     const drawing = renderSvg(graph, theme, room, overlay)
     // A Re-map request shows until the map is updated, or for half an hour.
     const askedAt = await read($, mapAskedAtom)
-    const mapAskedAt = askedAt && (await $.clock.now()) - askedAt < 30 * 60_000 ? askedAt : null
+    const mapAskedAt = askedAt && now - askedAt < 30 * 60_000 ? askedAt : null
     const width = Math.round(Math.min(room, drawing.width * 1.5))
     const height = Math.round((width * drawing.height) / drawing.width)
-    let marker = <Text dimColor>Mark a component from the notepad.</Text>
-    if (e.surface !== 'mobile' && graph?.nodes.length) {
-      const { Select } = $.ui.resolve(e)
-      marker = (
-        <Select
-          key="mark-node"
-          label="Mark"
-          options={graph.nodes.map(n => ({ value: n.id, label: n.label }))}
-          onSelect={async id => {
-            await update($, markTargetAtom, () => id)
-            await update($, askAtom, () => 'mark')
-          }}
-        />
-      )
-    }
+    const name = (id: string) => nodes.find(n => n.id === id)?.label ?? id
+    const savedAt = fresh?.at ?? graph?.updatedAt ?? 0
+    const status = [
+      `● Live · ${(await projectPath($)).split('/').pop() ?? ''}`,
+      fresh ? `map changed at ${timeLabel(fresh.at)}: ${changeText(fresh, graph)}` : savedAt ? `map saved ${dateKey(savedAt) === dateKey(now) ? timeLabel(savedAt) : dayLabel(savedAt)}` : '',
+    ]
+      .filter(Boolean)
+      .join(' · ')
+    const isOpen = !!selected && open.includes(selected.id)
     return (
       <Box flexDirection="column" gap={1}>
         {tabs}
-        <Svg source={drawing.svg} alt={drawing.alt} width={width} height={height} />
+        <Text key="map-status" dimColor>{status}</Text>
+        {active.length ? <Text key="map-active" bold>{`Claude is working in ${active.map(name).join(', ')}`}</Text> : null}
+        <Svg source={drawing.svg} alt={drawing.alt} width={width} height={height} isInteractive />
         {mapAskedAt ? (
           <Text key="map-asked" dimColor>{`Re-map requested at ${timeLabel(mapAskedAt)} · Claude starts as soon as it is free, and the map redraws when it is done.`}</Text>
         ) : null}
+        {nodes.length ? (
+          <Box key="map-nodes" flexDirection="row" flexWrap="wrap" gap={1}>
+            {nodes.map(n => (
+              <Button
+                key={`node:${n.id}`}
+                label={`${open.includes(n.id) ? '▾' : '▸'} ${n.label}`}
+                variant={selected?.id === n.id ? 'primary' : 'secondary'}
+                onPress={() => act($, n.label, () => pressComponent($, n.id))}
+              />
+            ))}
+            <Button key="map-open-all" label="Expand all" dimColor onPress={() => act($, 'Expand all', () => saveOpen($, nodes.map(n => n.id)))} />
+            <Button key="map-close-all" label="Collapse all" dimColor onPress={() => act($, 'Collapse all', () => saveOpen($, []))} />
+          </Box>
+        ) : null}
+        {selected && graph ? (
+          <Box key="map-card" flexDirection="column" gap={1} borderStyle="round" paddingX={1}>
+            <Markdown
+              text={componentCard(selected, graph, {
+                isActive: active.includes(selected.id),
+                edits: recent[selected.id] && now - recent[selected.id]!.at < RECENT_MS ? recent[selected.id] : undefined,
+                tag: fresh?.added.includes(selected.id) ? 'NEW' : fresh?.changed.includes(selected.id) ? 'UPDATED' : '',
+                mark: marks[selected.id],
+                now,
+              })}
+            />
+            <Box flexDirection="row" flexWrap="wrap" gap={1}>
+              <Button
+                key="card-open"
+                label={isOpen ? 'Close in the drawing' : 'Open in the drawing'}
+                onPress={() => act($, 'Open', () => saveOpen($, isOpen ? open.filter(id => id !== selected.id) : [...open, selected.id]))}
+              />
+              {selected.path ? <Button key="card-code" label="Jump to code" onPress={() => openInEditor($, selected.path ?? '', selected.line)} /> : null}
+              <Button
+                key="card-breakdown"
+                label={selected.breakdown ? 'Break down again' : 'Break down'}
+                onPress={() => act($, 'Break down', () => handleAsk($, JSON.stringify({ kind: 'breakdown', component: selected.id })))}
+              />
+              <Button
+                key="card-mark"
+                label="Mark…"
+                onPress={async () => {
+                  await update($, markTargetAtom, () => selected.id)
+                  await update($, askAtom, () => 'mark')
+                }}
+              />
+              <Button key="card-close" label="✕" dimColor onPress={() => update($, mapSelAtom, () => null)} />
+            </Box>
+          </Box>
+        ) : nodes.length ? (
+          <Text key="map-hint" dimColor>Choose a component to open it in place and see its parts, connections and recent edits. Rest the pointer on the drawing for details.</Text>
+        ) : null}
         <Box flexDirection="row" gap={1} flexWrap="wrap">
-          {marker}
           <Button key="map" label={graph ? 'Re-map' : 'Map a project'} onPress={() => act($, 'Re-map', () => startMap($, ''))} />
           <Button key="theme" label="Style…" onPress={() => update($, askAtom, () => 'brand')} />
           <Button
@@ -1844,12 +2099,6 @@ export const register: Register = on => {
             label="Export SVG"
             onPress={async () => $.ui.toast(await exportSvg($).catch(err => `arch-live: ${errorText(err)}`))}
           />
-        </Box>
-        {linked.length > 0 && <Text dimColor>Jump to code</Text>}
-        <Box flexDirection="row" flexWrap="wrap" gap={1}>
-          {linked.map(n => (
-            <Button key={`open:${n.id}`} label={n.label} dimColor onPress={() => openInEditor($, n.path ?? '', n.line)} />
-          ))}
         </Box>
       </Box>
     )
