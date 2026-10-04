@@ -109,8 +109,8 @@ const mapOpenAtom = atom({ plugin: 'arch-live', key: 'mapOpen' } as const, [])
 const mapSelAtom = atom({ plugin: 'arch-live', key: 'mapSel' } as const, null)
 const mapChangeAtom = atom({ plugin: 'arch-live', key: 'mapChange' } as const, null)
 const paneClockAtom = atom({ plugin: 'arch-live', key: 'paneClock' } as const, 0)
-// Off by default: a live frame takes the scroll wheel, so the pane scrolls in jerks over it.
-const paneHoverAtom = atom({ plugin: 'arch-live', key: 'paneHover' } as const, false)
+// On by default; off draws a plain image, for a surface where the live frame scrolls badly.
+const paneHoverAtom = atom({ plugin: 'arch-live', key: 'paneHover' } as const, true)
 
 // How long the drawing tags what the latest map change added or changed.
 const FRESH_MS = 15 * 60_000
@@ -1319,7 +1319,7 @@ const recentEdits = (graph: ArchGraph | null, days: JournalDay[], now: number): 
     if (e.type !== 'turn' || now - e.ts > RECENT_MS) continue
     for (const f of e.files) add(f.path, f.edits, e.ts)
   }
-  for (const f of turn?.files.values() ?? []) add(f.path, f.edits, now)
+  for (const f of turn?.files.values() ?? []) add(f.path, f.edits, turn?.ts ?? now)
   return out
 }
 

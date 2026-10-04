@@ -100,10 +100,9 @@ const sizeOf = (n: ArchNode, isOpen: boolean) => {
   return { w: Math.max(nodeWidth(n), OPEN_W), h: NODE_H + rows * (PART_H + PART_GAP) + 6 }
 }
 
-const ago = (ms: number) => {
-  const min = Math.round(ms / 60_000)
-  return min < 1 ? 'just now' : min === 1 ? '1 min ago' : `${min} min ago`
-}
+// A clock time, not "4 min ago": a drawing that changes every minute reloads
+// the pane's live frame every minute.
+const clock = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
 
 type Point = [number, number]
 
@@ -374,7 +373,7 @@ const layout = (graph: ArchGraph | null, theme: ArchTheme, orientation: Orientat
       parts ? `${parts} parts${open.has(n.id) ? '' : ', open it to see them'}` : 'Not broken down yet',
       described ? `${described} files described` : undefined,
       active.has(n.id) ? 'Claude is working here now' : undefined,
-      edits ? `Edited ${edits.edits} time${edits.edits === 1 ? '' : 's'}, last ${ago(now - edits.at)}` : undefined,
+      edits ? `Edited ${edits.edits} time${edits.edits === 1 ? '' : 's'}, last at ${clock(edits.at)}` : undefined,
       tag === 'NEW' ? 'New in the latest map update' : tag ? 'Changed in the latest map update' : undefined,
       mark ? `Mark: ${mark}` : undefined,
     ]
@@ -394,7 +393,7 @@ const layout = (graph: ArchGraph | null, theme: ArchTheme, orientation: Orientat
     let right = x + w - 8
     if (active.has(n.id)) {
       status.push(
-        `<circle cx="${right - 4}" cy="${y + 14}" r="4" style="fill:${v('accent')}"><animate attributeName="opacity" values="1;0.25;1" dur="1.4s" repeatCount="indefinite"/></circle>`,
+        `<circle cx="${right - 4}" cy="${y + 14}" r="4" style="fill:${v('accent')}"><animate attributeName="opacity" values="1;0.25;1" dur="1.4s" repeatCount="3"/></circle>`,
       )
       right -= 14
     }
@@ -410,7 +409,8 @@ const layout = (graph: ArchGraph | null, theme: ArchTheme, orientation: Orientat
     const edits = recentOf(n.id)
     if (edits) {
       const text = `✎${edits.edits}`
-      const fade = (1 - 0.65 * Math.min(1, (now - edits.at) / RECENT_MS)).toFixed(2)
+      // In three steps, so the drawing stays the same from one minute to the next.
+      const fade = ['1', '0.7', '0.45'][Math.min(2, Math.floor(((now - edits.at) / RECENT_MS) * 3))]
       status.push(
         `<text x="${right}" y="${y + 18}" text-anchor="end" font-family="${esc(f.mono)}" font-size="9" font-weight="600" opacity="${fade}" style="fill:${v('accent')}">${text}</text>`,
       )
@@ -462,7 +462,7 @@ const layout = (graph: ArchGraph | null, theme: ArchTheme, orientation: Orientat
     // Where Claude is working now: a ring that breathes.
     if (active.has(n.id)) {
       out.push(
-        `<rect x="${x - 4}" y="${y - 4}" width="${w + 8}" height="${h + 8}" rx="9" fill="none" style="stroke:${v('accent')}" stroke-width="2"><animate attributeName="opacity" values="0.9;0.15;0.9" dur="1.6s" repeatCount="indefinite"/></rect>`,
+        `<rect x="${x - 4}" y="${y - 4}" width="${w + 8}" height="${h + 8}" rx="9" fill="none" style="stroke:${v('accent')}" stroke-width="2"><animate attributeName="opacity" values="0.9;0.15;0.9" dur="1.6s" repeatCount="3"/></rect>`,
       )
     }
     // New or changed in the latest map update: a ring that flashes, then stays faint.
