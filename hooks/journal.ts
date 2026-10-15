@@ -1,4 +1,4 @@
-import type { ArchGraph, ArchSnapshot, CarryOffer, JournalDay, JournalDone, JournalEdit, JournalEntry, JournalNote, JournalTurn } from '../types'
+import type { ArchGraph, ArchSnapshot, CarryOffer, JournalCommit, JournalDay, JournalDone, JournalEdit, Insights, JournalEntry, JournalNote, JournalSession, JournalTests, JournalTurn } from '../types'
 
 // The work journal: one JSON file per project per day, outside the repo
 // (~/.claude/arch-live/logs/<project>/<YYYY-MM-DD>.json), so notes and
@@ -82,6 +82,36 @@ export const isTurn = (e: JournalEntry): e is JournalTurn => e.type === 'turn'
 const NOTE_KINDS = new Set(['note', 'todo', 'blocker', 'decision', 'mark'])
 export const isNote = (e: JournalEntry): e is JournalNote => NOTE_KINDS.has(e.type)
 const isDone = (e: JournalEntry): e is JournalDone => e.type === 'done'
+export const isCommit = (e: JournalEntry): e is JournalCommit => e.type === 'commit'
+
+// Your commits from `git log --no-merges --relative --name-only
+// --format=%x1e%H%x1f%ct%x1f%ae%x1f%s`, as journal entries. Someone else's
+// commits (another author email) and commits that touch nothing in the
+// project folder are left out.
+export const commitsFromLog = (text: string, email?: string): JournalCommit[] =>
+  text
+    .split('\u001e')
+    .map(block => {
+      const [head = '', ...rest] = block.split('\n')
+      const [sha = '', ct = '', author = '', ...subject] = head.split('\u001f')
+      const files = rest.map(l => l.trim()).filter(Boolean)
+      if (!/^[0-9a-f]{40}$/.test(sha) || !files.length) return undefined
+      if (email && author.toLowerCase() !== email.toLowerCase()) return undefined
+      return { id: `commit-${sha}`, ts: Number(ct) * 1000, type: 'commit' as const, sha, subject: subject.join('\u001f').trim(), files }
+    })
+    .filter((c): c is JournalCommit => !!c && Number.isFinite(c.ts))
+
+const short = (sha: string) => sha.slice(0, 7)
+const testsText = (t: JournalTests) => `${t.passed} passed${t.failed ? `, ${t.failed} failed` : ''}`
+
+// Where a turn's files went: "shipped in abc1234", "not committed", or how
+// many of them a commit has taken so far. Empty when that is not known.
+export const shipText = (t: JournalTurn): string => {
+  if (!t.files.length || !t.uncommitted) return ''
+  if (!t.uncommitted.length) return t.shipped?.length ? `shipped in ${t.shipped.map(c => short(c.sha)).join(', ')}` : ''
+  if (!t.shipped?.length) return 'not committed'
+  return `${t.files.length - t.uncommitted.length} of ${t.files.length} files committed`
+}
 
 // Lines the browser notepad appends (<date>.web.jsonl), one entry each.
 export const parseWebLines = (text: string): JournalEntry[] =>
@@ -101,8 +131,25 @@ export const parseWebLines = (text: string): JournalEntry[] =>
 // remove takes it out, and its latest done or undone says whether it is done.
 // The done event that closed it stays on the day it happened, with what it
 // closed, so finishing something shows in that day's journal.
-export const resolveDays = (days: JournalDay[]): JournalDay[] => {
+// In a git project (`tracksCommits`), each turn also learns which later
+// commits took its files, and which of its files none has taken yet.
+export const resolveDays = (days: JournalDay[], { tracksCommits = false }: { tracksCommits?: boolean } = {}): JournalDay[] => {
   const all = days.flatMap(d => d.entries).sort((a, b) => a.ts - b.ts)
+  const commits = all.filter(isCommit)
+  const ship = (logged: JournalTurn): JournalTurn => {
+    // A run of no tests at all is a misread summary, logged before testRun knew better.
+    const { tests, ...rest } = logged
+    const t: JournalTurn = tests && tests.passed + tests.failed === 0 ? rest : logged
+    if (!tracksCommits || !t.files.length) return t
+    const shipped = new Map<string, { sha: string; subject: string }>()
+    const uncommitted: string[] = []
+    for (const f of t.files) {
+      const c = commits.find(x => x.ts >= t.ts && x.files.includes(f.path))
+      if (c) shipped.set(c.sha, { sha: c.sha, subject: c.subject })
+      else uncommitted.push(f.path)
+    }
+    return { ...t, shipped: [...shipped.values()], uncommitted }
+  }
   const edits = new Map<string, JournalEdit>()
   const removed = new Set<string>()
   const status = new Map<string, { isDone: boolean; at: number }>()
@@ -131,6 +178,7 @@ export const resolveDays = (days: JournalDay[]): JournalDay[] => {
       })
       .sort((a, b) => a.ts - b.ts)
       .map(e => {
+        if (isTurn(e)) return ship(e)
         if (isNote(e)) return apply(e)
         if (isDone(e)) {
           const found = notes.get(e.ref)
@@ -190,7 +238,12 @@ export const dayMarkdown = (day: JournalDay, labels: Map<string, string>): strin
       if (e.files.length) lines.push(`- _${e.files.length} file${e.files.length > 1 ? 's' : ''}: ${e.files.slice(0, 4).map(f => `\`${f.path}\``).join(', ')}${e.files.length > 4 ? ' …' : ''}_`)
       if (e.arch?.added.length) lines.push(`- _Map: added ${e.arch.added.join(', ')}_`)
       if (e.arch?.removed.length) lines.push(`- _Map: removed ${e.arch.removed.join(', ')}_`)
+      if (e.tests) lines.push(`- _Tests: ${testsText(e.tests)} (\`${e.tests.command}\`)_`)
+      const ship = shipText(e)
+      if (ship) lines.push(`- _${ship[0]?.toUpperCase()}${ship.slice(1)}_`)
       lines.push('')
+    } else if (isCommit(e)) {
+      lines.push(`⎇ **${timeLabel(e.ts)}** Committed \`${short(e.sha)}\` ${e.subject} _(${e.files.length} file${e.files.length > 1 ? 's' : ''})_`, '')
     } else if (isDone(e)) {
       const from = e.refDate && e.refDate !== day.date ? ` _(${e.refType ?? 'item'} from ${dayLabel(Date.parse(`${e.refDate}T12:00:00`))})_` : ''
       lines.push(`✓ **${timeLabel(e.ts)}** Done: ${e.refText ?? 'an item'}${from}`, '')
@@ -217,7 +270,11 @@ export const standupDetail = ({ since, days, sessions = {} }: { since: number; d
       const did = e.summary.length ? ` → ${e.summary.join(' ')}` : ''
       const parts = e.components.length ? ` (components: ${e.components.join(', ')})` : ''
       const files = e.files.length ? ` (${e.files.length} file${e.files.length > 1 ? 's' : ''})` : ''
-      lines.push(`- ${when}${where} Asked: ${e.request}${did}${parts}${files}`)
+      const tests = e.tests ? ` (tests: ${testsText(e.tests)})` : ''
+      const ship = shipText(e) ? ` (${shipText(e)})` : ''
+      lines.push(`- ${when}${where} Asked: ${e.request}${did}${parts}${files}${tests}${ship}`)
+    } else if (isCommit(e)) {
+      lines.push(`- ${when} Committed ${short(e.sha)}: ${e.subject} (${e.files.length} file${e.files.length > 1 ? 's' : ''})`)
     } else if (isNote(e)) {
       lines.push(`- ${when}${where} ${e.type}${e.done ? ' (done)' : ''}: ${e.text}${e.why ? ` — because ${e.why}` : ''}`)
     } else if (isDone(e) && e.refText) {
@@ -262,7 +319,8 @@ export const buildStandup = ({ title, since, now, days, graph, sessions = {} }: 
     if (turn.files.length === 0 && !turn.arch) continue
     const line = turn.summary[0] ?? turn.request
     if (!line) continue
-    const files = turn.files.length ? ` _(${turn.files.length} file${turn.files.length > 1 ? 's' : ''})_` : ''
+    const ship = shipText(turn)
+    const files = turn.files.length ? ` _(${turn.files.length} file${turn.files.length > 1 ? 's' : ''}${ship ? `, ${ship}` : ''})_` : ''
     const components = turn.components.length ? turn.components : ['']
     for (const c of components) add(turn.session ?? '', label(c || undefined), `${line}${files}`)
   }
@@ -285,6 +343,23 @@ export const buildStandup = ({ title, since, now, days, graph, sessions = {} }: 
       ? [...done.entries()].flatMap(([id, byComponent]) => [`### ${sessionName(id)}`, ...components(byComponent), ''])
       : [...done.values()].flatMap(components),
   )
+  // What shipped: your commits in the window. What did not: files changed in
+  // the window that no commit has taken yet.
+  section(
+    'Shipped',
+    recent.filter(isCommit).map(c => `- \`${short(c.sha)}\` ${c.subject} _(${c.files.length} file${c.files.length > 1 ? 's' : ''})_`),
+  )
+  const pending = [...new Set(recent.filter(isTurn).flatMap(t => t.uncommitted ?? []))]
+  section(
+    'Not committed yet',
+    pending.length ? [`- ${pending.length} file${pending.length > 1 ? 's' : ''}: ${pending.slice(0, 6).map(p => `\`${p}\``).join(', ')}${pending.length > 6 ? ' …' : ''}`] : [],
+  )
+  // Tests: the last run in the window, against the first when they differ.
+  const runs = recent.filter(isTurn).flatMap(t => (t.tests ? [t.tests] : []))
+  const lastRun = runs[runs.length - 1]
+  const firstRun = runs[0]
+  const moved = firstRun && lastRun && runs.length > 1 && (firstRun.passed !== lastRun.passed || firstRun.failed !== lastRun.failed)
+  section('Tests', lastRun ? [`- ${lastRun.failed ? '⚠ ' : ''}${testsText(lastRun)} · \`${lastRun.command}\`${moved ? ` _(was ${testsText(firstRun)})_` : ''}`] : [])
   section(
     'Decisions',
     recent
@@ -334,4 +409,124 @@ export const buildStandup = ({ title, since, now, days, graph, sessions = {} }: 
 
   if (lines.length <= 3) lines.push(`No logged work since ${dayLabel(since)}.`)
   return lines.join('\n').trimEnd()
+}
+
+// The last `span` days at a glance, for the notepad's Insights tab and the
+// diagram's overlays: work and commits per day, each day's last test run,
+// which components saw work and what of theirs is not committed, the files
+// changed most, and how todos and blockers are going.
+export const insightsOf = (days: JournalDay[], graph: ArchGraph | null, now: number, span = 28): Insights => {
+  const today = new Date(now)
+  const dates = Array.from({ length: span }, (_, i) => dateKey(new Date(today.getFullYear(), today.getMonth(), today.getDate() - (span - 1 - i), 12).getTime()))
+  const from = dates[0] ?? dateKey(now)
+  const perDay = dates.map(date => ({ date, turns: 0, commits: 0, files: 0 }) as Insights['days'][number])
+  const byDate = new Map(perDay.map(d => [d.date, d]))
+  const entries = days.flatMap(d => d.entries).sort((a, b) => a.ts - b.ts)
+  const turns = entries.filter(isTurn)
+  const recentTurns = turns.filter(t => dateKey(t.ts) >= from)
+
+  for (const e of entries) {
+    const d = byDate.get(dateKey(e.ts))
+    if (!d) continue
+    if (isCommit(e)) d.commits += 1
+    if (isTurn(e)) {
+      d.turns += 1
+      d.files += e.files.length
+      if (e.tests) d.tests = { passed: e.tests.passed, failed: e.tests.failed }
+    }
+  }
+
+  const components: Insights['components'] = {}
+  const of = (id: string) => (components[id] ??= { turns: 0, lastAt: 0, uncommitted: [] })
+  for (const t of recentTurns) {
+    for (const c of t.components) {
+      const one = of(c)
+      one.turns += 1
+      one.lastAt = Math.max(one.lastAt, t.ts)
+      if (t.tests) one.tests = { ...t.tests, at: t.ts }
+    }
+  }
+  // Not committed: every turn's files that no later commit took, whatever day.
+  for (const t of turns) {
+    for (const p of t.uncommitted ?? []) {
+      const c = componentFor(graph, p) ?? t.components[0]
+      if (c && !of(c).uncommitted.includes(p)) of(c).uncommitted.push(p)
+    }
+  }
+
+  const files = new Map<string, { path: string; edits: number; turns: number }>()
+  for (const t of recentTurns) {
+    for (const f of t.files) {
+      const one = files.get(f.path) ?? { path: f.path, edits: 0, turns: 0 }
+      one.edits += f.edits
+      one.turns += 1
+      files.set(f.path, one)
+    }
+  }
+
+  const items = entries.filter(isNote).filter(n => n.type === 'todo' || n.type === 'blocker')
+  const open = items.filter(n => !n.done)
+  const closed = items.filter(n => n.done && n.doneAt !== undefined && dateKey(n.doneAt) >= from)
+  const avgCloseMs = closed.length ? closed.reduce((sum, n) => sum + ((n.doneAt ?? n.ts) - n.ts), 0) / closed.length : undefined
+
+  return {
+    span,
+    days: perDay,
+    components,
+    files: [...files.values()].sort((a, b) => b.edits - a.edits || b.turns - a.turns).slice(0, 8),
+    items: {
+      open: open.length,
+      closed: closed.length,
+      ...(avgCloseMs !== undefined ? { avgCloseMs } : {}),
+      oldest: open.slice(0, 3).map(n => ({ text: n.text, type: n.type, ts: n.ts })),
+    },
+  }
+}
+
+// Folding one project's journal folder into another's: for journals that were
+// split by subfolder (logs/<project>-test/ beside logs/<project>/) before
+// every folder resolved to its project root. Each step is safe to repeat:
+// entries are matched by id, so a second run adds nothing.
+
+// The project a journal folder was written for: of the paths its files name
+// (each day's `project`, meta.json's), the one the folder is named after.
+export const folderProject = (key: string, paths: (string | undefined)[]): string | undefined =>
+  paths.find((p): p is string => typeof p === 'string' && p.startsWith('/') && projectKey(p) === key)
+
+const earlier = (a?: ArchSnapshot, b?: ArchSnapshot) => (!a ? b : !b ? a : (b.ts ?? 0) < (a.ts ?? 0) ? b : a)
+const later = (a?: ArchSnapshot, b?: ArchSnapshot) => (!a ? b : !b ? a : (b.ts ?? 0) > (a.ts ?? 0) ? b : a)
+
+// One day from both folders: every entry once (the target's copy kept), in
+// time order; the earlier opening map and the later latest one.
+export const mergeDay = (target: JournalDay | undefined, source: JournalDay, project: string): JournalDay => {
+  const base: JournalDay = target ?? { version: 1, date: source.date, project, entries: [] }
+  const seen = new Set(base.entries.map(e => e.id))
+  const entries = [...base.entries, ...source.entries.filter(e => !seen.has(e.id))].sort((a, b) => a.ts - b.ts)
+  const opening = earlier(base.opening, source.opening)
+  const snapshot = later(base.snapshot, source.snapshot)
+  return { ...base, project, entries, ...(opening ? { opening } : {}), ...(snapshot ? { snapshot } : {}) }
+}
+
+// The notepad's appended lines: the source's lines the target does not have yet.
+export const mergeWebLines = (target: string, source: string): string => {
+  const seen = new Set(parseWebLines(target).map(e => e.id))
+  const added = parseWebLines(source).filter(e => !seen.has(e.id))
+  if (added.length === 0) return target
+  const head = target && !target.endsWith('\n') ? `${target}\n` : target
+  return `${head}${added.map(e => JSON.stringify(e)).join('\n')}\n`
+}
+
+// One session seen from both folders: the target's record, over the span of both.
+export const mergeSession = (target: JournalSession | undefined, source: JournalSession): JournalSession => {
+  if (!target) return source
+  const isSourceName = source.isNamed && !target.isNamed
+  const endedAt = target.endedAt !== undefined && source.endedAt !== undefined ? Math.max(target.endedAt, source.endedAt) : target.endedAt
+  return {
+    ...source,
+    ...target,
+    ...(isSourceName ? { name: source.name, isNamed: true } : {}),
+    startedAt: Math.min(target.startedAt, source.startedAt),
+    lastAt: Math.max(target.lastAt, source.lastAt),
+    ...(endedAt !== undefined ? { endedAt } : {}),
+  }
 }

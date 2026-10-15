@@ -4,6 +4,7 @@ A Claude Code mod that keeps a live picture of the system you are building and a
 
 - **Live architecture.** Claude keeps `.claude/architecture.json` up to date as it works; the side pane draws it in your own design tokens.
 - **Work journal.** Each turn is logged with the files and components it touched. `/n`, `/todo`, `/blocker` and `/decision` jot notes mid-turn; Claude logs its own decisions and blockers.
+- **Timeline.** How the map changed, day by day: what each day added, removed, renamed or rewired, the turns that did it, and changes made outside a session. In the pane and the notepad.
 - **Standup.** `/standup` builds a brief since the last one and copies it for Slack.
 - **Notepad.** `/notepad` opens a browser app for a second monitor: journal, component drawer (files, functions, summaries), whiteboard with Send to Claude, and the standup.
 
@@ -17,9 +18,11 @@ The mod hooks are the hub: Claude Code calls them, they draw the pane, write the
 
 | Part | Files |
 | --- | --- |
-| Mod hooks | `hooks/register.tsx`, `types/index.d.ts` |
-| Diagram renderer | `hooks/render.ts`, `hooks/theme.ts` |
-| Journal and STE distiller | `hooks/journal.ts`, `hooks/ste.ts` |
+| Mod hooks (everything that calls the engine) | `hooks/register.tsx`, `types/index.d.ts` |
+| Map logic, prompts and tool schemas | `hooks/graph.ts`, `hooks/prompts.ts`, `hooks/schemas.ts`, `hooks/constants.ts`, `hooks/util.ts` |
+| Diagram renderer and pane text | `hooks/render.ts`, `hooks/theme.ts`, `hooks/pane-text.ts` |
+| Journal, map timeline and STE distiller | `hooks/journal.ts`, `hooks/timeline.ts`, `hooks/ste.ts` |
+| Tests | `tests/*.test.ts`, run with `claude plugin test .` |
 | Notepad server | `notepad/server.mjs`, `notepad/workspace.mjs` |
 | Browser notepad | `notepad/app.html` (markup), `notepad/app/css/*.css` and `notepad/app/js/*.js`, one file per part, loaded in the order the page lists |
 

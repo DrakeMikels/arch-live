@@ -1,0 +1,44 @@
+/* Timeline: how the map changed, a step a row, the chosen step's map beside. */
+
+.timeline { flex: 1; display: flex; min-width: 0; min-height: 0; }
+.tl-list { width: 290px; flex: none; overflow-y: auto; padding: 14px 10px 40px; border-right: 1px solid var(--rule); }
+.tl-list .hist-month { margin: 12px 6px 4px; }
+.tl-step { display: flex; flex-direction: column; gap: 1px; width: 100%; text-align: left; border: 0; background: none; padding: 7px 10px; border-radius: 6px; cursor: pointer; }
+.tl-step:hover { background: var(--paper2); }
+.tl-step[aria-current="true"] { background: var(--accentTint); box-shadow: inset 2px 0 0 var(--accent); }
+.tl-step .when { color: var(--ink); }
+.tl-step .what { color: var(--soft); font-size: 11px; }
+.tl-step.between .when { color: var(--muted); font-style: italic; }
+.tl-detail { flex: 1; min-width: 0; overflow-y: auto; padding: 20px 28px 60px; }
+.tl-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.tl-head h2 { font-size: 15px; margin: 0; }
+.tl-head .spacer { flex: 1; }
+.tl-note { margin-top: 6px; }
+.tl-mapwrap { margin: 16px 0; overflow-x: auto; border: 1px solid var(--rule); border-radius: 8px; background: var(--nodeFill); padding: 10px; }
+.tl-map { display: block; width: 100%; height: auto; }
+.tl-tier { font-size: 9px; letter-spacing: .14em; fill: var(--soft); }
+.tl-node rect { fill: var(--paper); stroke: var(--muted); stroke-width: 1; }
+.tl-node .tl-label { font-size: 12px; fill: var(--ink); }
+.tl-node .tl-kind { font-size: 10px; fill: var(--soft); }
+.tl-node .tl-tag { font-size: 8px; letter-spacing: .1em; fill: var(--accent); font-weight: 600; }
+.tl-node.new rect { stroke: var(--accent); stroke-width: 2; fill: var(--nodeFill); }
+.tl-node.renamed rect { stroke: var(--accent); stroke-dasharray: 2 2; }
+.tl-node.gone { opacity: .55; }
+.tl-node.gone rect { stroke-dasharray: 5 4; fill: var(--nodeFill); }
+.tl-node.gone .tl-label { text-decoration: line-through; }
+.tl-node.gone .tl-tag { fill: var(--soft); }
+.tl-edge { fill: none; stroke: var(--muted); stroke-width: 1.2; }
+.tl-edge.new { stroke: var(--accent); stroke-width: 2; }
+.tl-edge.gone { stroke: var(--soft); stroke-dasharray: 4 4; }
+.tl-changes { display: grid; gap: 6px; }
+.tl-row { display: flex; gap: 12px; align-items: baseline; }
+.tl-what { flex: none; width: 140px; font-size: 10px; letter-spacing: .14em; text-transform: uppercase; color: var(--soft); }
+.tl-sub { font-size: 10px; letter-spacing: .14em; text-transform: uppercase; color: var(--soft); font-weight: 500; margin: 22px 0 6px; }
+.tl-turns { margin: 0; padding-left: 18px; }
+.tl-turns li { margin: 3px 0; }
+@media (max-width: 700px) {
+  .timeline { flex-direction: column; }
+  .tl-list { width: auto; max-height: 34vh; border-right: 0; border-bottom: 1px solid var(--rule); }
+  .tl-detail { padding: 16px; }
+  .tl-what { width: 110px; }
+}

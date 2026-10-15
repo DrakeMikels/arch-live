@@ -40,48 +40,83 @@ const roundRoute = pts => {
   const last = pts[pts.length - 1]
   return `${d} L ${last.x} ${last.y}`
 }
-// The fallback's curve between two boxes.
-const linkPath = (ra, rb) => {
-  const cy = r => r.y + r.h / 2
-  if (ra.x + ra.w <= rb.x || rb.x + rb.w <= ra.x) {
-    const isRight = ra.x + ra.w <= rb.x
-    const x1 = isRight ? ra.x + ra.w : ra.x
-    const x2 = isRight ? rb.x : rb.x + rb.w
-    const dx = Math.max(30, Math.abs(x2 - x1) / 2) * (isRight ? 1 : -1)
-    return { d: `M ${x1} ${cy(ra)} C ${x1 + dx} ${cy(ra)}, ${x2 - dx} ${cy(rb)}, ${x2} ${cy(rb)}`, mx: (x1 + x2) / 2, my: (cy(ra) + cy(rb)) / 2 }
-  }
-  const isDown = rb.y > ra.y
-  const x1 = ra.x + ra.w / 2; const x2 = rb.x + rb.w / 2
-  const y1 = isDown ? ra.y + ra.h : ra.y; const y2 = isDown ? rb.y : rb.y + rb.h
-  return { d: `M ${x1} ${y1} C ${x1} ${(y1 + y2) / 2}, ${x2} ${(y1 + y2) / 2}, ${x2} ${y2}`, mx: (x1 + x2) / 2, my: (y1 + y2) / 2 }
-}
 // A note's text without its formatting marks, for places that draw plain text.
 const plainText = t => String(t ?? '').replace(/\[([^\]]+)\]\([^)]+\)/g, '$1').replace(/\*\*([^*]+)\*\*/g, '$1').replace(/~~([^~]+)~~/g, '$1').replace(/`([^`]+)`/g, '$1').replace(/(^|\s)_([^_]+)_(?=\s|$|[.,;:!?])/g, '$1$2').replace(/^\s*[-*] /gm, '').replace(/\s*\n\s*/g, ' · ')
 const cutText = (t, n) => (String(t ?? '').length > n ? `${String(t).slice(0, n - 1)}…` : String(t ?? ''))
-// A line you bent in your arrangement: it leaves each box on the side facing
-// the handle and passes through it. The handle is kept relative to the
-// midpoint of the two boxes, so it follows them when they move.
+// A line you bent in your arrangement passes through its handle. The handle
+// is kept relative to the midpoint of the two boxes, so it follows them.
 const centerOf = r => ({ x: r.x + r.w / 2, y: r.y + r.h / 2 })
-const faceToward = (r, p) => {
-  const c = centerOf(r)
-  const dx = p.x - c.x; const dy = p.y - c.y
-  if (Math.abs(dx) / r.w > Math.abs(dy) / r.h) return { x: dx > 0 ? r.x + r.w : r.x, y: c.y }
-  return { x: c.x, y: dy > 0 ? r.y + r.h : r.y }
-}
 const bendHandle = (ra, rb, off) => {
   const a = centerOf(ra); const b = centerOf(rb)
   return { x: (a.x + b.x) / 2 + off.dx, y: (a.y + b.y) / 2 + off.dy }
 }
-const bentPath = (ra, rb, off) => {
-  const h = bendHandle(ra, rb, off)
-  const p1 = faceToward(ra, h); const p2 = faceToward(rb, h)
-  const cx = 2 * h.x - (p1.x + p2.x) / 2; const cy = 2 * h.y - (p1.y + p2.y) / 2
-  return { d: `M ${p1.x} ${p1.y} Q ${cx} ${cy} ${p2.x} ${p2.y}`, mx: h.x, my: h.y }
-}
 const bendsOf = () => mapData?.arrangement?.bends ?? {}
 const canBend = L => L.isCustom && !mapPrefs.isLocked
-// The handle of an unbent line: the curve's middle, where a drag starts from.
+// The handle of an unbent line: the middle of its longest run, where a drag starts from.
 const midHandle = (ra, rb, p) => ({ x: p.mx, y: p.my, dx: p.mx - (centerOf(ra).x + centerOf(rb).x) / 2, dy: p.my - (centerOf(ra).y + centerOf(rb).y) / 2 })
+
+// Overlays: the map tinted by what the journal knows (/api/insights).
+let mapInsights = null
+const OVERLAYS = {
+  none: { label: 'No overlay', legend: '' },
+  activity: { label: 'Recent activity', legend: 'Darker: more turns in the last 4 weeks' },
+  uncommitted: { label: 'Not committed', legend: 'Files changed that no commit has taken yet' },
+  tests: { label: 'Tests', legend: 'The last test run after work on each component' },
+}
+const agoText = ms => { const m = Math.round((Date.now() - ms) / 60000); return m < 60 ? `${Math.max(1, m)}m ago` : m < 1440 ? `${Math.round(m / 60)}h ago` : `${Math.round(m / 1440)}d ago` }
+// What the overlay says about one component: a tint, how strong, and a word.
+const overlayOf = id => {
+  const c = mapInsights?.components?.[id]
+  const mode = mapPrefs.overlay
+  if (!c || mode === 'none') return null
+  if (mode === 'activity') {
+    const most = Math.max(1, ...Object.values(mapInsights.components).map(x => x.turns))
+    return c.turns ? { tone: 'accent', a: 0.1 + 0.35 * (c.turns / most), text: `${c.turns} turn${c.turns > 1 ? 's' : ''} · ${agoText(c.lastAt)}` } : null
+  }
+  if (mode === 'uncommitted') return c.uncommitted.length ? { tone: 'warn', a: 0.22, text: `${c.uncommitted.length} file${c.uncommitted.length > 1 ? 's' : ''} not committed` } : null
+  if (mode === 'tests' && c.tests) return c.tests.failed ? { tone: 'bad', a: 0.24, text: `✗ ${c.tests.failed} failing` } : { tone: 'good', a: 0.16, text: `✓ ${c.tests.passed} passed` }
+  return null
+}
+
+// Focus: hovering a component fades what it does not touch; shift-clicking
+// two components lights the shortest path between them.
+const mapFocus = { hover: null, path: null }
+const ownerOf = id => (String(id).includes('/') ? String(id).slice(0, String(id).indexOf('/')) : String(id))
+const pairKey = (a, b) => (a < b ? `${a}|${b}` : `${b}|${a}`)
+const neighborsOf = id => new Set((mapData?.edges ?? []).flatMap(e => (e.from === id ? [e.to] : e.to === id ? [e.from] : [])))
+// The shortest chain of connections from a to b, either direction; null when none.
+const pathBetween = (a, b) => {
+  const prev = new Map([[a, null]])
+  const queue = [a]
+  while (queue.length) {
+    const at = queue.shift()
+    if (at === b) break
+    for (const next of neighborsOf(at)) if (!prev.has(next)) { prev.set(next, at); queue.push(next) }
+  }
+  if (!prev.has(b)) return null
+  const ids = []
+  for (let at = b; at !== null; at = prev.get(at)) ids.unshift(at)
+  return ids
+}
+// What stays lit: null when nothing is focused.
+const litSets = () => {
+  if (mapFocus.path?.ids?.length === 2 && mapFocus.path.chain) {
+    const chain = mapFocus.path.chain
+    return { nodes: new Set(chain), pairs: new Set(chain.slice(1).map((id, i) => pairKey(chain[i], id))) }
+  }
+  if (mapFocus.path?.ids?.length === 1) {
+    const id = mapFocus.path.ids[0]
+    return { nodes: new Set([id, ...neighborsOf(id)]), pairs: new Set([...neighborsOf(id)].map(x => pairKey(id, x))) }
+  }
+  const id = mapFocus.hover
+  if (!id || !mapData?.nodes.some(n => n.id === id)) return null
+  return { nodes: new Set([id, ...neighborsOf(id)]), pairs: new Set([...neighborsOf(id)].map(x => pairKey(id, x))) }
+}
+const isEdgeLit = (lit, from, to) => {
+  if (!lit) return true
+  const a = ownerOf(from); const b = ownerOf(to)
+  return a === b ? lit.nodes.has(a) : lit.pairs.has(pairKey(a, b))
+}
 
 const mapLines = (lines, x, y, lh, cls) => (lines.length ? `<text class="${cls}">${lines.map((l, i) => `<tspan x="${x}" y="${y + i * lh}">${esc(l)}</tspan>`).join('')}</text>` : '')
 
@@ -98,34 +133,78 @@ const mapMarkup = (L, isExport = false) => {
   const marker = s => (s === 'http' ? 'link' : s === 'thin' ? 'soft' : 'muted')
   const edgeOut = []
   const handleOut = []
+  const lit = isExport ? null : litSets()
+  const dimAttr = (from, to) => (isEdgeLit(lit, from, to) ? '' : ' class="dim"')
   if (L.routed) {
     for (const e of L.edges) {
       if (e.a <= 0.01) continue
-      edgeOut.push(`<g opacity="${(e.a ?? 1).toFixed(3)}"><path d="${roundRoute(e.pts)}" class="m-edge ${edgeClass(e.style)}" marker-end="url(#m-${marker(e.style)})"/>${e.labels.map(l => `<text x="${l.x}" y="${l.y}" text-anchor="middle" class="m-elabel">${esc(cutText(l.text.toUpperCase(), 24))}</text>`).join('')}</g>`)
+      // A line being built (draw < 1) is drawn that far along; its arrowhead
+      // and label come once it arrives.
+      const draw = e.draw ?? 1
+      const drawing = draw < 1 ? ` pathLength="1" style="stroke-dasharray:1 1;stroke-dashoffset:${(1 - draw).toFixed(3)}"` : ''
+      const arrow = draw >= 0.98 ? ` marker-end="url(#m-${marker(e.style)})"` : ''
+      const labelA = draw < 1 ? Math.max(0, (draw - 0.6) / 0.4).toFixed(3) : '1'
+      edgeOut.push(`<g opacity="${(e.a ?? 1).toFixed(3)}"${dimAttr(e.from, e.to)}><path d="${roundRoute(e.pts)}" class="m-edge ${edgeClass(e.style)}"${drawing}${arrow}/>${e.labels.map(l => `<text x="${l.x}" y="${l.y}" text-anchor="middle" class="m-elabel" opacity="${labelA}">${esc(cutText(l.text.toUpperCase(), 24))}</text>`).join('')}</g>`)
     }
   } else {
-    // Unrouted (your arrangement, or no ELK): curves, the parts' own links included.
+    // Unrouted (your arrangement, or no ELK): right-angled lines routed around
+    // every box in the way (map-route.js), the parts' own links included.
+    const shown = r => r && r.a >= 0.5
+    const owner = id => (id.includes('/') ? id.slice(0, id.indexOf('/')) : null)
+    // What a line between ends `f` and `t` must go around: every other
+    // component, and the other parts inside a component it starts or ends in.
+    // An open component it starts or ends in is no obstacle, apart from its
+    // name and subtitle: lines come in below or beside them.
+    const avoidFor = (f, t) => {
+      const homes = new Set([f, t, owner(f), owner(t)].filter(Boolean))
+      const boxes = mapData.nodes.filter(n => !homes.has(n.id) && shown(L.nodes[n.id])).map(n => L.nodes[n.id])
+      for (const [k, r] of Object.entries(L.parts)) if (homes.has(owner(k)) && k !== f && k !== t && shown(r)) boxes.push(r)
+      for (const n of mapData.nodes) {
+        const r = L.nodes[n.id]
+        if (!(n.id === owner(f) || n.id === owner(t)) || !shown(r)) continue
+        const tx = nodeText(n, true)
+        const textW = 28 + Math.max(...tx.label.map(x => x.length * CH.label), ...tx.sub.map(x => x.length * CH.sub), 0)
+        boxes.push({ x: r.x, y: r.y, w: Math.min(r.w, textW), h: tx.head })
+      }
+      return boxes
+    }
+    const links = []
     for (const n of mapData.nodes) {
       if (!openSet.has(n.id)) continue
       const ids = new Set(partsFor(n).parts.map(p => p.id))
       for (const x of partsFor(n).edges) {
-        const a = L.parts[`${n.id}/${x.from}`]; const b = L.parts[`${n.id}/${x.to}`]
-        if (!ids.has(x.from) || !ids.has(x.to) || !a || !b || Math.min(a.a, b.a) < 0.5) continue
-        const key = `${n.id}/${x.from}->${n.id}/${x.to}`
-        const off = bendsOf()[key]
-        const pth = off && L.isCustom ? bentPath(a, b, off) : linkPath(a, b)
-        edgeOut.push(`<path d="${pth.d}" class="m-edge" marker-end="url(#m-muted)"/>${x.label ? `<text x="${pth.mx}" y="${pth.my - (canBend(L) ? 11 : 5)}" text-anchor="middle" class="m-elabel">${esc(cutText(x.label.toUpperCase(), 22))}</text>` : ''}`)
-        if (!isExport && canBend(L)) handleOut.push({ key, ...(off ? { ...bendHandle(a, b, off), isBent: true } : midHandle(a, b, pth)) })
+        const f = `${n.id}/${x.from}`; const t = `${n.id}/${x.to}`
+        const a = L.parts[f]; const b = L.parts[t]
+        if (!ids.has(x.from) || !ids.has(x.to) || x.from === x.to || !shown(a) || !shown(b)) continue
+        links.push({ key: `${f}->${t}`, a, b, label: x.label, cls: '', mk: 'muted', limit: 22 })
       }
     }
     for (const x of linkEnds()) {
-      const ra = L.nodes[x.from] ?? L.parts[x.from]; const rb = L.nodes[x.to] ?? L.parts[x.to]
-      if (!ra || !rb || Math.min(ra.a, rb.a) < 0.5) continue
-      const key = `${x.from}->${x.to}`
-      const off = bendsOf()[key]
-      const p = off && L.isCustom ? bentPath(ra, rb, off) : linkPath(ra, rb)
-      if (!isExport && canBend(L)) handleOut.push({ key, ...(off ? { ...bendHandle(ra, rb, off), isBent: true } : midHandle(ra, rb, p)) })
-      edgeOut.push(`<path d="${p.d}" class="m-edge ${edgeClass(x.style)}" marker-end="url(#m-${marker(x.style)})"/>${x.label ? `<text x="${p.mx}" y="${p.my - (canBend(L) ? 11 : 5)}" text-anchor="middle" class="m-elabel">${esc(cutText(x.label.toUpperCase(), 22))}</text>` : ''}`)
+      const a = L.nodes[x.from] ?? L.parts[x.from]; const b = L.nodes[x.to] ?? L.parts[x.to]
+      if (!shown(a) || !shown(b) || x.from === x.to) continue
+      links.push({ key: `${x.from}->${x.to}`, a, b, label: x.label, cls: edgeClass(x.style), mk: marker(x.style), limit: 22 })
+    }
+    for (const l of links) {
+      const [f, t] = l.key.split('->')
+      l.avoid = avoidFor(f, t)
+      // Parts sit close together: lines to and from them keep less room.
+      if (owner(f) || owner(t)) l.gap = 10
+      const off = L.isCustom && bendsOf()[l.key]
+      if (off) { l.off = off; l.via = bendHandle(l.a, l.b, off) }
+    }
+    // The router is an ES module (map-route.js); until it has loaded, one elbow each.
+    const routes = typeof routeLinks === 'function' ? routeLinks(links) : Object.fromEntries(links.map(l => {
+      const pts = [centerOf(l.a), { x: centerOf(l.b).x, y: centerOf(l.a).y }, centerOf(l.b)]
+      return [l.key, { pts, mx: pts[1].x, my: pts[1].y, isUpright: false }]
+    }))
+    for (const l of links) {
+      const p = routes[l.key]
+      const label = !l.label ? '' : p.isUpright
+        ? `<text x="${p.mx + 8}" y="${p.my + 4}" text-anchor="start" class="m-elabel">${esc(cutText(l.label.toUpperCase(), l.limit))}</text>`
+        : `<text x="${p.mx}" y="${p.my - (canBend(L) ? 11 : 5)}" text-anchor="middle" class="m-elabel">${esc(cutText(l.label.toUpperCase(), l.limit))}</text>`
+      const [lf, lt] = l.key.split('->')
+      edgeOut.push(`<g${dimAttr(lf, lt)}><path d="${roundRoute(p.pts)}" class="m-edge ${l.cls}" marker-end="url(#m-${l.mk})"/>${label}</g>`)
+      if (!isExport && canBend(L)) handleOut.push({ key: l.key, ...(l.off ? { ...l.via, isBent: true } : midHandle(l.a, l.b, p)) })
     }
   }
   // Components first, then every line above their fills, then the parts.
@@ -138,8 +217,13 @@ const mapMarkup = (L, isExport = false) => {
     const pv = partsFor(n)
     const isFocus = (mapData.focus ?? []).includes(n.id)
     const mark = mapData.marks?.[n.id]
-    out.push(`<g class="m-node${isOpen ? ' open' : ''}" data-mnode="${esc(n.id)}" opacity="${r.a.toFixed(3)}"><title>${esc(n.label)}${n.sublabel ? ` · ${esc(n.sublabel)}` : ''}</title>`)
+    const isDim = lit && !lit.nodes.has(n.id)
+    const ov = isExport ? null : overlayOf(n.id)
+    out.push(`<g class="m-node${isOpen ? ' open' : ''}${isDim ? ' dim' : ''}${mapFocus.path?.ids?.includes(n.id) ? ' picked' : ''}" data-mnode="${esc(n.id)}" opacity="${r.a.toFixed(3)}"><title>${esc(n.label)}${n.sublabel ? ` · ${esc(n.sublabel)}` : ''}</title>`)
     out.push(`<rect x="${r.x}" y="${r.y}" width="${r.w}" height="${r.h}" rx="${isOpen ? 14 : 9}" class="m-box${isFocus ? ' focus' : ''}${!isExport && drawer?.id === n.id ? ' sel' : ''}"/>`)
+    const pickAt = isExport ? -1 : (mapFocus.path?.ids ?? []).indexOf(n.id)
+    if (pickAt >= 0) out.push(`<text x="${r.x + r.w}" y="${r.y - 7}" text-anchor="end" class="m-pick">${pickAt === 0 ? 'FROM' : 'TO'}</text>`)
+    if (ov) out.push(`<rect x="${r.x}" y="${r.y}" width="${r.w}" height="${r.h}" rx="${isOpen ? 14 : 9}" class="m-ov ${ov.tone}" style="opacity:${ov.a.toFixed(2)}"/><text x="${r.x + r.w}" y="${r.y + r.h + 13}" text-anchor="end" class="m-ovtext">${esc(ov.text)}</text>`)
     out.push(`<text x="${r.x + 14}" y="${r.y + 20}" class="m-kind${isFocus ? ' focus' : ''}">${esc(n.kind.toUpperCase())}</text>`)
     out.push(mapLines(t.label, r.x + 14, r.y + 39, 18, 'm-label'))
     out.push(mapLines(t.sub, r.x + 14, r.y + 39 + t.label.length * 18 - 2, 14, 'm-sub'))
@@ -155,7 +239,7 @@ const mapMarkup = (L, isExport = false) => {
       if (!pr || pr.a < 0.02) return
       const pt = partText(part)
       const on = !isExport && drawer?.id === n.id && drawer?.part === part.id
-      partOut.push(`<g class="m-part" data-mpart="${esc(`${n.id}/${part.id}`)}" opacity="${pr.a.toFixed(3)}"><title>${esc(part.summary ?? part.label)}</title>
+      partOut.push(`<g class="m-part${isDim ? ' dim' : ''}" data-mpart="${esc(`${n.id}/${part.id}`)}" opacity="${pr.a.toFixed(3)}"><title>${esc(part.summary ?? part.label)}</title>
         <rect x="${pr.x}" y="${pr.y}" width="${pr.w}" height="${pr.h}" rx="8" class="m-pbox${on ? ' sel' : ''}"/>
         <text x="${pr.x + 32}" y="${pr.y + 19}" class="m-kind">${esc((part.role ?? (pv.isQuick ? 'files' : 'part')).toUpperCase())}</text>
         ${mapLines(pt.label, pr.x + 32, pr.y + 36, 16, 'm-plabel')}
@@ -169,8 +253,11 @@ const mapMarkup = (L, isExport = false) => {
   return out.join('') + edgeOut.join('') + partOut.join('') + handles.join('')
 }
 
+window.addEventListener('arch-live:routes', () => { if (mapLayout && !mapLayout.routed) drawMap(mapLayout) })
 const drawMap = L => {
   if (!mapData) return
+  // A view that went bad (a zero, negative or missing zoom) is reset, not drawn.
+  if (!(mapView.z > 0) || !Number.isFinite(mapView.x) || !Number.isFinite(mapView.y)) Object.assign(mapView, fitView(L) ?? { x: 0, y: 0, z: 1 })
   $('#mapvp').innerHTML = mapMarkup(L)
   $('#mapvp').setAttribute('transform', `translate(${mapView.x},${mapView.y}) scale(${mapView.z})`)
   $('#mapZoom').textContent = `${Math.round(mapView.z * 100)}%`
@@ -184,15 +271,18 @@ const animateMap = async (anchorId, ms = 460) => {
   if (ticket !== mapTicket) return
   const from = mapLayout ?? next
   const view0 = { x: mapView.x, y: mapView.y }
-  const z0 = mapView.z
+  const z0 = mapView.z > 0 ? mapView.z : 1
   const a0 = anchorId && from.nodes[anchorId]; const a1 = anchorId && next.nodes[anchorId]
   let z1 = z0
   let x1 = a0 && a1 ? view0.x + (a0.x - a1.x) * z0 : view0.x
   let y1 = a0 && a1 ? view0.y + (a0.y - a1.y) * z0 : view0.y
-  if (a1 && openSet.has(anchorId)) {
-    const view = $('#map').getBoundingClientRect()
-    const MG = 24
-    z1 = Math.min(z0, (view.width - MG * 2) / a1.w, (view.height - MG * 2) / a1.h)
+  const view = $('#map').getBoundingClientRect()
+  const MG = 24
+  // Fitting an opened component needs a laid-out canvas: one measured while
+  // hidden or mid-resize is a few pixels wide, and fitting to that gave a
+  // zero or negative zoom that hid the map from then on.
+  if (a1 && openSet.has(anchorId) && view.width > MG * 4 && view.height > MG * 4) {
+    z1 = Math.max(0.25, Math.min(z0, (view.width - MG * 2) / a1.w, (view.height - MG * 2) / a1.h))
     const sx = a0 ? view0.x + a0.x * z0 : x1 + a1.x * z1
     const sy = a0 ? view0.y + a0.y * z0 : y1 + a1.y * z1
     x1 = Math.min(Math.max(sx, MG), view.width - MG - a1.w * z1) - a1.x * z1
@@ -211,22 +301,119 @@ const animateMap = async (anchorId, ms = 460) => {
   mapAnim = requestAnimationFrame(step)
 }
 
+// The view that shows a whole layout, centred; null before there is room.
+const fitView = L => {
+  const r = $('#map').getBoundingClientRect()
+  if (!L.w || !r.width) return null
+  const z = Math.min(1.4, Math.max(0.25, Math.min((r.width - 40) / L.w, (r.height - 40) / L.h)))
+  return { z, x: (r.width - L.w * z) / 2 - (L.minX ?? 0) * z, y: (r.height - L.h * z) / 2 - (L.minY ?? 0) * z }
+}
+
 const fitMap = async () => {
   const L = await computeLayout()
-  const r = $('#map').getBoundingClientRect()
-  if (!L.w || !r.width) return
-  mapView.z = Math.min(1.4, Math.max(0.25, Math.min((r.width - 40) / L.w, (r.height - 40) / L.h)))
-  mapView.x = (r.width - L.w * mapView.z) / 2 - (L.minX ?? 0) * mapView.z
-  mapView.y = (r.height - L.h * mapView.z) / 2 - (L.minY ?? 0) * mapView.z
+  const v = fitView(L)
+  if (!v) return
+  Object.assign(mapView, v)
   mapLayout = L
   drawMap(L)
+}
+
+// A big change builds up instead of morphing at once. First what stays glides
+// into place and what went fades out; then the new components come in tier by
+// tier (clients first, external services last), each rising into place, and
+// each new line draws itself once both its ends are there.
+const BUILD = { MORPH: 460, TIER: 360, NODE: 90, FADE: 320, DRAW: 380, RISE: 14 }
+const isBigChange = (prevIds, nodes) => {
+  const added = nodes.filter(n => !prevIds.has(n.id)).length
+  return added >= 3 || (prevIds.size === 0 && added > 0)
+}
+const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)')
+
+const buildMap = async prevIds => {
+  const ticket = ++mapTicket
+  const next = await computeLayout()
+  if (ticket !== mapTicket) return
+  const comp = key => String(key ?? '').split('/')[0]
+  const isNew = id => !prevIds.has(id)
+  const clamp = v => Math.min(1, Math.max(0, v))
+  const kindOf = Object.fromEntries(mapData.nodes.map(n => [n.id, n.kind]))
+  // The map as it ends, less what is new: what the first phase glides to.
+  const kept = { ...next, nodes: {}, parts: {}, edges: next.edges.filter(e => !isNew(comp(e.from)) && !isNew(comp(e.to))) }
+  for (const [id, r] of Object.entries(next.nodes)) if (!isNew(id)) kept.nodes[id] = r
+  for (const [key, r] of Object.entries(next.parts)) if (!isNew(comp(key))) kept.parts[key] = r
+  // When each new component starts to show: tier by tier, then along the flow.
+  const fresh = Object.keys(next.nodes)
+    .filter(isNew)
+    .map(id => ({ id, tier: TIER[kindOf[id]] ?? 2, r: next.nodes[id] }))
+    .sort((a, b) => a.tier - b.tier || a.r.x - b.r.x || a.r.y - b.r.y)
+  const startOf = {}
+  let group = -1
+  let tier = null
+  let inGroup = 0
+  for (const f of fresh) {
+    if (f.tier !== tier) { group += 1; tier = f.tier; inGroup = 0 }
+    startOf[f.id] = group * BUILD.TIER + inGroup++ * BUILD.NODE
+  }
+  const shownAt = id => (isNew(id) ? (startOf[id] ?? 0) + BUILD.FADE : 0)
+  const isFreshEdge = e => isNew(comp(e.from)) || isNew(comp(e.to))
+  const edgeStart = e => Math.max(shownAt(comp(e.from)), shownAt(comp(e.to)))
+  const build = Math.max(0, ...fresh.map(f => startOf[f.id] + BUILD.FADE), ...next.edges.filter(isFreshEdge).map(e => edgeStart(e) + BUILD.DRAW))
+  const frameAt = t => {
+    const L = { ...next, nodes: { ...next.nodes }, parts: { ...next.parts }, edges: [] }
+    const shown = id => ease(clamp((t - startOf[id]) / BUILD.FADE))
+    for (const f of fresh) {
+      const a = shown(f.id)
+      L.nodes[f.id] = { ...f.r, y: f.r.y + (1 - a) * BUILD.RISE, a }
+    }
+    for (const [key, r] of Object.entries(next.parts)) {
+      if (!isNew(comp(key))) continue
+      const a = shown(comp(key))
+      L.parts[key] = { ...r, y: r.y + (1 - a) * BUILD.RISE, a }
+    }
+    for (const e of next.edges) {
+      if (!isFreshEdge(e)) { L.edges.push(e); continue }
+      const p = clamp((t - edgeStart(e)) / BUILD.DRAW)
+      if (p > 0) L.edges.push({ ...e, a: 1, draw: ease(p) })
+    }
+    return L
+  }
+  // Mostly new (a first map, a re-map): the view moves to frame the finished
+  // map while what stays glides, so the build happens in view.
+  const from = mapLayout ?? kept
+  const hasKept = Object.keys(kept.nodes).length > 0 && !!mapLayout
+  const morph = hasKept ? BUILD.MORPH : 0
+  const view0 = { x: mapView.x, y: mapView.y, z: mapView.z }
+  const view1 = fresh.length > Object.keys(kept.nodes).length ? (fitView(next) ?? view0) : view0
+  cancelAnimationFrame(mapAnim)
+  const t0 = performance.now()
+  const step = now => {
+    if (ticket !== mapTicket) return
+    const t = now - t0
+    const k = morph ? ease(clamp(t / morph)) : 1
+    mapView.x = mix(view0.x, view1.x, k); mapView.y = mix(view0.y, view1.y, k); mapView.z = mix(view0.z, view1.z, k)
+    if (t < morph) mapLayout = between(from, kept, t / morph)
+    else mapLayout = t - morph >= build ? next : frameAt(t - morph)
+    drawMap(mapLayout)
+    if (t < morph + build) mapAnim = requestAnimationFrame(step)
+  }
+  mapAnim = requestAnimationFrame(step)
+}
+
+const loadInsights = async () => {
+  const next = await api('/api/insights').catch(() => null)
+  if (!next || next.error) return
+  mapInsights = next
+  if (mapLayout && mapPrefs.overlay !== 'none') drawMap(mapLayout)
 }
 
 const renderDiagram = async () => {
   const next = await api('/api/graph')
   if (next.error) return
+  // What was on the map before this change, to tell a big change from a small one.
+  const prevIds = mapData && mapView.isFitted ? new Set(mapData.nodes.map(n => n.id)) : null
   mapData = next
   loadDrift()
+  loadInsights()
   // Opened or closed in the pane: take that over.
   const shared = next.view?.open
   if (Array.isArray(shared) && (shared.length !== openSet.size || shared.some(id => !openSet.has(id)))) {
@@ -236,6 +423,7 @@ const renderDiagram = async () => {
   }
   for (const id of [...openSet]) if (!mapData.nodes.some(n => n.id === id)) openSet.delete(id)
   if (!mapView.isFitted) { mapView.isFitted = true; return fitMap() }
+  if (prevIds && isBigChange(prevIds, mapData.nodes) && !reducedMotion.matches) return buildMap(prevIds)
   animateMap(drawer?.id)
 }
 
@@ -277,6 +465,8 @@ $('#map').addEventListener('click', async e => {
     return
   }
   const node = e.target.closest('[data-mnode]')
+  // Picking a path: the next component clicked (or any shift-click) is its other end.
+  if (node && (e.shiftKey || mapFocus.path?.ids?.length === 1)) return pickForPath(node.dataset.mnode)
   if (node) {
     const id = node.dataset.mnode
     if (e.altKey) {
@@ -288,8 +478,70 @@ $('#map').addEventListener('click', async e => {
     toggleNode(id)
     return
   }
+  if (mapFocus.path) return clearPath()
   if (drawer) closeDrawer()
 })
+
+// Shift-click one component, then another: the path between them stays lit.
+// The bar at the top of the map says what is picked and how to get out.
+const renderFocusBar = () => {
+  const bar = $('#mapFocusBar')
+  const p = mapFocus.path
+  if (!p?.ids?.length) { bar.hidden = true; bar.innerHTML = ''; return }
+  const name = id => `<strong>${esc(label(id))}</strong>`
+  const text = p.ids.length === 1
+    ? `Path from ${name(p.ids[0])}: now click the component it should reach`
+    : p.chain ? `Path: ${p.chain.map(name).join(' → ')}` : `No connection between ${name(p.ids[0])} and ${name(p.ids[1])}`
+  bar.innerHTML = `<span>${text}</span><button class="btn" data-focus="clear">${p.ids.length === 1 ? 'Cancel' : 'Clear path'} <kbd>Esc</kbd></button>`
+  bar.hidden = false
+}
+const clearPath = () => { mapFocus.path = null; renderFocusBar(); if (mapLayout) drawMap(mapLayout) }
+const pickForPath = id => {
+  const ids = !mapFocus.path || mapFocus.path.ids.length === 2 ? [id] : mapFocus.path.ids[0] === id ? [] : [mapFocus.path.ids[0], id]
+  if (!ids.length) return clearPath()
+  const chain = ids.length === 2 ? pathBetween(ids[0], ids[1]) : null
+  mapFocus.path = { ids, chain }
+  renderFocusBar()
+  drawMap(mapLayout)
+}
+// From the drawer's "Path to…": start a fresh path at this component, with
+// the drawer closed and the whole map in view so the other end can be clicked.
+const startPathFrom = async id => {
+  mapFocus.path = null
+  if (tab !== 'diagram') await setTab('diagram')
+  if (drawer) closeDrawer()
+  await fitMap()
+  pickForPath(id)
+}
+// Reset view: no path, no drawer, the whole map in view (overlay and layout stay).
+const resetMapView = async () => {
+  mapFocus.path = null
+  mapFocus.hover = null
+  renderFocusBar()
+  if (drawer) closeDrawer()
+  await fitMap()
+}
+$('#mapReset').addEventListener('click', resetMapView)
+$('#mapFocusBar').addEventListener('click', e => { if (e.target.closest('[data-focus="clear"]')) clearPath() })
+// Hover: what a component touches stays, the rest fades (not while dragging).
+$('#map').addEventListener('pointerover', e => {
+  if (e.buttons) return
+  const id = e.target.closest('[data-mnode]')?.dataset.mnode ?? null
+  if (id === mapFocus.hover) return
+  mapFocus.hover = id
+  if (mapLayout && !mapFocus.path) drawMap(mapLayout)
+})
+$('#map').addEventListener('pointerleave', () => { if (mapFocus.hover) { mapFocus.hover = null; if (mapLayout && !mapFocus.path) drawMap(mapLayout) } })
+
+// The overlay picker: what the boxes are tinted by.
+const setOverlay = value => {
+  mapPrefs.overlay = OVERLAYS[value] ? value : 'none'
+  savePrefs()
+  $('#mapOverlay').value = mapPrefs.overlay
+  $('#mapLegend').textContent = OVERLAYS[mapPrefs.overlay].legend
+  if (mapLayout) drawMap(mapLayout)
+}
+$('#mapOverlay').addEventListener('change', e => setOverlay(e.target.value))
 $('#map').addEventListener('dblclick', e => {
   const part = e.target.closest('[data-mpart]')
   if (!part) return
@@ -413,6 +665,8 @@ $('#map').addEventListener('wheel', e => {
 }, { passive: false })
 const syncMapTools = () => {
   $('#mapMode').value = mapPrefs.mode
+  $('#mapOverlay').value = mapPrefs.overlay
+  $('#mapLegend').textContent = OVERLAYS[mapPrefs.overlay]?.legend ?? ''
   $('#mapLock').textContent = mapPrefs.isLocked ? '🔒 Locked' : '🔓 Drag to arrange'
   $('#mapLock').classList.toggle('unlocked', !mapPrefs.isLocked)
   $('#map').classList.toggle('unlocked', !mapPrefs.isLocked)

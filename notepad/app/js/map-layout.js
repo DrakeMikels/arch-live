@@ -4,7 +4,8 @@
 // click a component and it opens where it sits, its parts inside. ELK (the
 // layout engine behind Mermaid's cleaner layouts) places every box and routes
 // every line around them; the boxes glide between layouts and the lines fade
-// onto their new routes. Without ELK, a simpler column layout draws instead.
+// onto their new routes, and a big change (a re-map) builds up tier by tier
+// (buildMap in map.js). Without ELK, a simpler column layout draws instead.
 let mapData = null
 let mapLayout = null
 let mapAnim = 0
@@ -13,7 +14,7 @@ let mapDragged = false
 const mapView = { x: 0, y: 0, z: 1, isFitted: false }
 // Which layout draws the map, and whether components can be dragged (per browser).
 const mapPrefs = (() => {
-  try { return { mode: 'lr', isLocked: true, ...JSON.parse(localStorage.getItem(`arch-live-mapprefs:${token}`) || '{}') } } catch { return { mode: 'lr', isLocked: true } }
+  try { return { mode: 'lr', isLocked: true, overlay: 'none', ...JSON.parse(localStorage.getItem(`arch-live-mapprefs:${token}`) || '{}') } } catch { return { mode: 'lr', isLocked: true, overlay: 'none' } }
 })()
 const savePrefs = () => { try { localStorage.setItem(`arch-live-mapprefs:${token}`, JSON.stringify(mapPrefs)) } catch {} }
 const elk = typeof ELK === 'function' ? new ELK() : null
@@ -156,7 +157,8 @@ const fromElk = (res, graph) => {
       const s = e.sections?.[0]
       if (!s) continue
       const pts = [s.startPoint, ...(s.bendPoints ?? []), s.endPoint].map(p => ({ x: p.x + ox, y: p.y + oy }))
-      L.edges.push({ id: e.id, pts, style: styleOf[e.id] ?? 'call', labels: (e.labels ?? []).map(l => ({ text: l.text, x: l.x + ox + l.width / 2, y: l.y + oy + l.height - 3 })) })
+      // from and to: what the line joins (a component, or "component/part").
+      L.edges.push({ id: e.id, from: e.sources?.[0], to: e.targets?.[0], pts, style: styleOf[e.id] ?? 'call', labels: (e.labels ?? []).map(l => ({ text: l.text, x: l.x + ox + l.width / 2, y: l.y + oy + l.height - 3 })) })
     }
   }
   for (const c of res.children ?? []) {

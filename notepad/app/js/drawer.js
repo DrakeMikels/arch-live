@@ -116,6 +116,7 @@ const renderDrawer = () => {
     <div class="actions">
       ${d.node.path ? `<button class="btn" data-open="${esc(d.node.path)}" data-line="${d.node.line ?? 1}">Open entry ↗</button>` : ''}
       <button class="btn${missing ? ' accent' : ''}" id="describe" ${missing ? '' : 'disabled'}>${missing ? `Describe ${Math.min(missing, 40)} file${missing === 1 ? '' : 's'} with Claude` : 'All files described'}</button>
+      <button class="btn" data-pathfrom="${esc(drawer.id)}" title="Then click another component on the map: the connections between them stay lit">Path to…</button>
       <button class="btn${d.breakdown ? '' : ' accent'}" id="breakdown" title="Claude reads the code and names the component's parts and how they connect">${d.breakdown ? 'Break down again' : 'Break down with Claude'}</button>
     </div>
     ${marksSection(d)}
@@ -153,6 +154,8 @@ const drawerClick = async t => {
   const open = t.closest('[data-open]')
   if (open) return openCode(open.dataset.open, open.dataset.line)
   if (t.closest('#drawerClose')) return closeDrawer()
+  const from = t.closest('[data-pathfrom]')
+  if (from) return startPathFrom(from.dataset.pathfrom)
   if (t.closest('#describe')) {
     const res = await api('/api/ask', { kind: 'describe', component: drawer.id })
     return toast(res.ok ? `Asked Claude to describe ${res.files} file${res.files === 1 ? '' : 's'}: they fill in as it works` : 'Could not reach the session')

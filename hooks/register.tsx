@@ -1,25 +1,35 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type {
-  ArchAsk,
-  ArchEdge,
-  ArchEdgeStyle,
-  ArchGraph,
-  ArchKind,
-  ArchNode,
-  ArchTheme,
-  CarryOffer,
-  JournalDay,
-  JournalEntry,
-  JournalFile,
-  JournalNote,
-  JournalNoteType,
-  JournalSession,
-  ArchPart,
-  MapChange,
-  PaneTab,
-} from '../types'
+import type { ArchAsk, ArchGraph, ArchNode, ArchPart, ArchTheme, CarryOffer, JournalDay, JournalEntry, JournalFile, JournalNote, JournalNoteType, JournalSession, JournalTests } from '../types'
+import {
+  BLOCKER_TOOL,
+  BREAKDOWN_TOOL,
+  CELL_PX,
+  COMMANDS,
+  DAY_MS,
+  DECISION_TOOL,
+  DESCRIBE_TOOL,
+  EXPLAIN_TOOL,
+  EXPORT_FILE,
+  FRESH_MS,
+  GRAPH_FILE,
+  NOTE_COMMANDS,
+  NOTE_PLACEHOLDER,
+  NOTE_TYPES,
+  PANE,
+  PART_ROLES,
+  POPOUT_FILE,
+  PROJECT_MARKERS,
+  STANDUP_TOOL,
+  TABS,
+  THEME_TOOL,
+  TODO_TOOL,
+  UPDATE_TOOL,
+  VIEW_FILE,
+} from './constants'
+import { applyUpdate, mapDiff, marksOf, mergeChange, normalizeGraph, recentEdits } from './graph'
+import type { UpdateArgs } from './graph'
 import {
   buildStandup,
   carryOffer,
@@ -28,7 +38,6 @@ import {
   dayLabel,
   dayMarkdown,
   emptyDay,
-  isNote,
   labelsFrom,
   newId,
   openItems,
@@ -40,51 +49,27 @@ import {
   standupDetail,
   timeLabel,
 } from './journal'
+import { changeText, componentCard, fitText, stepMarkdown, stepTitle, timelineMarkdown } from './pane-text'
+import { boardPrompt, brandPrompt, breakdownPrompt, describePrompt, explainPrompt, mapPrompt, SECTION, standupPrompt } from './prompts'
+import { projectRootOf } from './project-root'
 import { outline, popoutHtml, RECENT_MS, renderSvg } from './render'
 import type { Overlay } from './render'
+import { COMMAND_DEFS, TOOL_DEFS } from './schemas'
 import { distill } from './ste'
+import { testRun } from './test-runs'
 import { DEFAULT_THEME, normalizeTheme, themeWarnings } from './theme'
+import { mapTimeline, snapshotGraph, stepKey } from './timeline'
+import { canon, cleanRoot, errorText, inRoot, parseJson, plain } from './util'
 
-const PANE = 'arch-live'
-const GRAPH_FILE = '.claude/architecture.json'
-const EXPORT_FILE = 'docs/architecture.svg'
-const POPOUT_FILE = '.claude/architecture.html'
-// Desktop panes report their width in character cells of about this many CSS
-// pixels (measured: a 79-cell pane is about 550px wide).
-const CELL_PX = 7
-const UPDATE_TOOL = 'mcp__arch-live__arch_update'
-const THEME_TOOL = 'mcp__arch-live__arch_theme'
-const DECISION_TOOL = 'mcp__arch-live__log_decision'
-const BLOCKER_TOOL = 'mcp__arch-live__log_blocker'
-const TODO_TOOL = 'mcp__arch-live__log_todo'
-const DESCRIBE_TOOL = 'mcp__arch-live__describe_files'
-const STANDUP_TOOL = 'mcp__arch-live__save_standup'
-const BREAKDOWN_TOOL = 'mcp__arch-live__arch_breakdown'
-const EXPLAIN_TOOL = 'mcp__arch-live__explain_part'
-const PART_ROLES = ['entry', 'handler', 'ui', 'logic', 'data', 'integration', 'config', 'util']
-const NOTE_COMMANDS: Record<string, JournalNoteType> = { n: 'note', todo: 'todo', blocker: 'blocker', decision: 'decision' }
-const COMMANDS = ['arch', 'arch-map', 'arch-theme', 'arch-export', 'standup', 'done', 'notepad', ...Object.keys(NOTE_COMMANDS)]
-const DAY_MS = 24 * 60 * 60 * 1000
-const TABS: [PaneTab, string][] = [
-  ['diagram', 'Diagram'],
-  ['journal', 'Journal'],
-  ['standup', 'Standup'],
-]
-const NOTE_TYPES: [JournalNoteType, string][] = [
-  ['note', 'Note'],
-  ['todo', 'Todo'],
-  ['blocker', 'Blocker'],
-  ['decision', 'Decision'],
-]
-const NOTE_PLACEHOLDER: Partial<Record<JournalNoteType, string>> = {
-  note: 'Note… (@component to tag it)',
-  todo: 'What is left to do…',
-  blocker: 'What is blocking you…',
-  decision: 'Decision… because why',
-}
-const KINDS: ArchKind[] = ['client', 'edge', 'service', 'worker', 'queue', 'store', 'external']
-const STYLES: ArchEdgeStyle[] = ['call', 'http', 'async']
-const PROJECT_MARKERS = ['.git', 'package.json', 'pyproject.toml', 'go.mod', 'Cargo.toml', 'Gemfile', 'pom.xml']
+// arch-live: a live architecture diagram and a work journal for your standup.
+//
+// Everything that calls the engine ($) is in this file, in the sections below:
+// the engine follows $ only into functions declared in the same file. What
+// needs no engine lives beside it and is tested on its own: constants.ts,
+// schemas.ts, prompts.ts, graph.ts (the map's logic), timeline.ts (its history), journal.ts, pane-text.ts, render.ts,
+// theme.ts, ste.ts, project-root.ts and util.ts.
+
+/* ---------- What the pane draws from, and the turn being recorded ---------- */
 
 const graphAtom = atom({ plugin: 'arch-live', key: 'graph' } as const, null)
 const themeAtom = atom({ plugin: 'arch-live', key: 'theme' } as const, null)
@@ -97,6 +82,7 @@ const tabAtom = atom({ plugin: 'arch-live', key: 'tab' } as const, 'diagram')
 const jdateAtom = atom({ plugin: 'arch-live', key: 'jdate' } as const, '')
 const jdayAtom = atom({ plugin: 'arch-live', key: 'jday' } as const, null)
 const jdatesAtom = atom({ plugin: 'arch-live', key: 'jdates' } as const, [])
+const tlStepAtom = atom({ plugin: 'arch-live', key: 'tlStep' } as const, '')
 const openAtom = atom({ plugin: 'arch-live', key: 'open' } as const, [])
 const activeAtom = atom({ plugin: 'arch-live', key: 'active' } as const, [])
 const noteTypeAtom = atom({ plugin: 'arch-live', key: 'noteType' } as const, 'note')
@@ -110,196 +96,27 @@ const mapSelAtom = atom({ plugin: 'arch-live', key: 'mapSel' } as const, null)
 const mapChangeAtom = atom({ plugin: 'arch-live', key: 'mapChange' } as const, null)
 const paneClockAtom = atom({ plugin: 'arch-live', key: 'paneClock' } as const, 0)
 
-// How long the drawing tags what the latest map change added or changed.
-const FRESH_MS = 15 * 60_000
-// Which components are open in place, beside the journal: the pane and the
-// notepad both read and write it, so they open and close together.
-const VIEW_FILE = 'map-view.json'
-
-// A pane button's work, with any failure said in a toast instead of lost.
-const act = ($: EngineInterface, what: string, work: () => Promise<unknown>) =>
-  work().catch(err => $.ui.toast(`arch-live: ${what} did not work (${errorText(err)})`))
-
-const SECTION = {
-  id: 'arch-live:guide',
-  scope: 'session' as const,
-  text: [
-    '# Live architecture (arch-live)',
-    `This session shows a live system-architecture diagram, stored in ${GRAPH_FILE} of the mapped project.`,
-    `When your work adds, removes, renames or rewires a system component (an app, service, worker, queue, data store, external API or client), call ${UPDATE_TOOL} in the same turn so the diagram stays true.`,
-    'Keep it architectural: deployable components and the connections between them, not files, classes or functions. Changes inside a component need no update.',
-    '',
-    "The person keeps a work journal for their daily standup. Record what they would need to explain later:",
-    `- ${DECISION_TOOL} when you make or recommend a design choice (what, why, and what else you considered).`,
-    `- ${BLOCKER_TOOL} when something stops progress (a failing dependency, missing access, an open question for someone), and again with resolved: true once it is cleared.`,
-    `- ${TODO_TOOL} for work left over at the end of a task, and with done: true when you finish an item already on the list.`,
-    'Keep each entry to one plain sentence. Do not log routine edits; the journal records files and components by itself.',
-    '',
-    `When you create a file or change what one does (not small fixes), call ${DESCRIBE_TOOL} with a one-line summary for it, so the notepad's file view stays true.`,
-  ].join('\n'),
+// The turn being recorded: what was asked, what changed. Module state is fine
+// here: a reload mid-turn only loses that turn's entry.
+type TurnDraft = {
+  ts: number
+  request: string
+  files: Map<string, JournalFile>
+  components: Set<string>
+  commands: number
+  added: string[]
+  removed: string[]
+  tests?: JournalTests
 }
 
-const mapPrompt = (root: string) =>
-  [
-    `Map the system architecture of the project in ${root} for the arch-live diagram.`,
-    'Explore the codebase: package manifests, workspace and docker-compose files, infra config, entry points and top-level directories. Identify the clients, edge (gateways, CDNs, routers), services and workers, queues, data stores and external APIs.',
-    `Then call ${UPDATE_TOOL} once with replace: true, root: "${root}", the components and the connections between them. Stay at architecture level: 4 to 12 nodes, each a distinct deployable or system boundary. Give every node a path, relative to the project, to the file where its code starts (an entry point, route or handler, not a folder) and a line when that code sits inside a larger file, plus owns: the folders that belong to it. Mark the 1 or 2 components a newcomer should look at first as focus.`,
-    `Then call ${DESCRIBE_TOOL} once per component with one plain sentence (under 15 words) for each of its key files: entry points, routes, handlers, models; up to 15 per component.`,
-    `Finally, ask me whether to add an "Architecture" section to the README that embeds the diagram (/arch-export writes ${EXPORT_FILE}).`,
-  ].join('\n\n')
-
-const brandPrompt = (url: string) =>
-  [
-    `Extract design tokens from ${url} for my arch-live diagram style (saved for my account; every repo uses it).`,
-    'Fetch the page and its linked stylesheets. Read the CSS custom properties, the most used colors, and the font families.',
-    'Map them to these roles: paper (page and container background), paper2, ink (primary text and strokes), muted (secondary text, default arrows), soft (sublabels), rule (hairlines), accent (focal nodes only), accentTint (fill behind an accent stroke), link (HTTP/API arrows), nodeFill (service node fill). Leave fonts out: the person keeps JetBrains Mono.',
-    "Constraints: ink and muted must reach WCAG AA on paper; exactly one accent hue, the brand's most distinctive; paper warm-neutral, never pure white; from an 8-color brand keep 3 (paper, ink, accent) and make the rest muted variants. Give a dark palette too, or leave it out and it is derived by swapping paper and ink.",
-    `Call ${THEME_TOOL} with source: "${url}", fix anything its warnings flag, then show me the tokens in a short table.`,
-  ].join('\n\n')
-
-const breakdownPrompt = (node: ArchNode, graph: ArchGraph) => {
-  const others = graph.nodes.filter(n => n.id !== node.id).map(n => `${n.id} (${n.label})`).join(', ')
-  const files = Object.entries(node.files ?? {}).slice(0, 30).map(([p, f]) => `- ${p}: ${f.summary}`)
-  return [
-    `Break down the ${node.label} component of my architecture into its internal parts, for the arch-live diagram.`,
-    `Read its code: entry ${node.path ?? '(none)'}${node.line ? `:${node.line}` : ''}; it owns ${(node.owns ?? []).join(', ') || 'no folders listed'}.`,
-    ...(files.length ? ['What its files do, as summarised before:', ...files] : []),
-    'Pick 3 to 10 parts, each with one clear responsibility: a module, handler, store, UI area or job. A part can be a folder, a file, or a section of a large file (give the line where it starts).',
-    `For each part: id (kebab-case), label (2 to 4 words), role (${PART_ROLES.join(', ')}), path, line, and one plain sentence under 20 words on its purpose.`,
-    `Then the connections: part to part, and part to another component where the call happens. Other components: ${others || 'none'}.`,
-    `Call ${BREAKDOWN_TOOL} once with component "${node.id}". Reply with one short line when done.`,
-  ].join('\n')
+const live: { turn: TurnDraft | undefined; lastComponent: string | undefined } = {
+  turn: undefined,
+  lastComponent: undefined,
 }
 
-const explainPrompt = (node: ArchNode, part: ArchPart) =>
-  [
-    `Explain the "${part.label}" part of the ${node.label} component in depth, for my arch-live notepad.`,
-    `Read its code at ${part.path ?? node.path ?? 'the component'}${part.line ? `:${part.line}` : ''}. Its purpose, as summarised: ${part.summary ?? 'not yet described'}.`,
-    'Write Markdown under 200 words: what it does; how it works (the main flow in 3 to 6 bullets); what it depends on and what calls it; anything risky or surprising. Plain, short sentences.',
-    `Then call ${EXPLAIN_TOOL} with component "${node.id}", part "${part.id}" and the Markdown as detail. Reply with one short line when done.`,
-  ].join('\n')
+/* ---------- Where things are: the project, its map and its journal ---------- */
 
-const describePrompt = (id: string, label: string, files: string[]) =>
-  [
-    `Describe the files of the ${label} component for my arch-live notepad.`,
-    'For each file below, read enough of it to write one plain sentence (under 15 words) on what it does. Skip generated or trivial files.',
-    `Then call ${DESCRIBE_TOOL} with component "${id}" and all of the summaries in one call. Reply with one short line when done.`,
-    '',
-    ...files.map(f => `- ${f}`),
-  ].join('\n')
-
-const boardPrompt = (title: string, png: string, md: string, note: string) =>
-  [
-    `I sketched this on my arch-live whiteboard ("${title}").${note ? ` ${note}` : ''}`,
-    '',
-    `The drawing is saved at ${png}. Read that image to see the layout: shapes, arrows, what is circled or connected to what.`,
-    ...(md.trim() ? ['', 'Text and code on the board, exactly as written:', '', md.trim()] : []),
-    ...(note ? [] : ['', 'Tell me briefly what you make of it, then ask what I want to do with it.']),
-  ].join('\n')
-
-const UPDATE_SCHEMA = {
-  type: 'object',
-  properties: {
-    root: {
-      type: 'string',
-      description: 'The project folder: a full path, or relative to the session folder. Omitted, the current one.',
-    },
-    title: { type: 'string', description: 'Diagram title, e.g. the product name.' },
-    replace: { type: 'boolean', description: 'Start from an empty diagram instead of merging (use for a full re-map).' },
-    nodes: {
-      type: 'array',
-      description: 'Components to add, or to update by id.',
-      items: {
-        type: 'object',
-        properties: {
-          id: { type: 'string', description: 'Stable kebab-case id, e.g. "orders-api".' },
-          label: { type: 'string', description: 'Human name, e.g. "Orders API".' },
-          kind: { type: 'string', enum: KINDS },
-          sublabel: { type: 'string', description: 'Technical detail in mono: stack, port or protocol, e.g. "Next.js · :3000".' },
-          path: { type: 'string', description: 'Project-relative file where the code starts: an entry point, route or handler. A folder opens on its entry file.' },
-          line: { type: 'number', description: 'Entry-point line within path, when path is a file.' },
-          owns: { type: 'array', items: { type: 'string' }, description: 'Project-relative folders that belong to this component, for matching edits to it.' },
-        },
-        required: ['id'],
-      },
-    },
-    edges: {
-      type: 'array',
-      description: 'Connections to add, or to update by from+to.',
-      items: {
-        type: 'object',
-        properties: {
-          from: { type: 'string' },
-          to: { type: 'string' },
-          label: { type: 'string', description: 'Short arrow label, e.g. "REST", "publishes", "SQL".' },
-          style: { type: 'string', enum: STYLES, description: 'http: HTTP/API call; async: event or queue; call: anything else.' },
-        },
-        required: ['from', 'to'],
-      },
-    },
-    remove_nodes: { type: 'array', items: { type: 'string' }, description: 'Ids to remove, with their edges.' },
-    remove_edges: {
-      type: 'array',
-      items: { type: 'object', properties: { from: { type: 'string' }, to: { type: 'string' } }, required: ['from', 'to'] },
-    },
-    focus: {
-      type: 'array',
-      items: { type: 'string' },
-      description: 'At most 2 ids drawn in the accent color. Omitted, the nodes this call added or changed are accented when there are 2 or fewer.',
-    },
-  },
-}
-
-const PALETTE_SCHEMA = {
-  type: 'object',
-  properties: Object.fromEntries(Object.keys(DEFAULT_THEME.light).map(k => [k, { type: 'string', description: 'Hex or rgba() color.' }])),
-}
-
-const THEME_SCHEMA = {
-  type: 'object',
-  properties: {
-    name: { type: 'string', description: 'Name of the style, e.g. "Acme brand".' },
-    source: { type: 'string', description: 'Where it came from: the URL, file or "pasted".' },
-    mode: { type: 'string', enum: ['auto', 'light', 'dark'], description: "auto follows the viewer's light/dark setting." },
-    light: PALETTE_SCHEMA,
-    dark: PALETTE_SCHEMA,
-    fonts: {
-      type: 'object',
-      properties: { serif: { type: 'string' }, sans: { type: 'string' }, mono: { type: 'string' } },
-    },
-  },
-  required: ['light'],
-}
-
-type NodeInput = Partial<Omit<ArchNode, 'order'>> & { id?: unknown }
-type UpdateArgs = {
-  root?: string
-  title?: string
-  replace?: boolean
-  nodes?: NodeInput[]
-  edges?: Partial<ArchEdge>[]
-  remove_nodes?: string[]
-  remove_edges?: { from: string; to: string }[]
-  focus?: string[]
-}
-
-const parseJson = (text: string): unknown => {
-  try {
-    return JSON.parse(text)
-  } catch {
-    return undefined
-  }
-}
-
-const errorText = (err: unknown) => (err instanceof Error ? `${err.name}: ${err.message}` : String(err))
-
-// JSON for $.state: no undefined anywhere.
-const plain = <T,>(value: T): T => JSON.parse(JSON.stringify(value)) as T
-
-const cleanRoot = (root: unknown) =>
-  typeof root === 'string' ? root.trim().replace(/^\.\/+/, '').replace(/\/+$/, '').replace(/(^|\/)\.\.(\/|$)/g, '') : ''
-
-const inRoot = (root: string, path: string) => (root ? `${root}/${path}` : path)
+// Where the project, its map and its journal are, and the map the pane shows.
 
 const homeThemePath = async ($: EngineInterface) => `${(await $.env.get('HOME')) ?? '~'}/.claude/arch-live/theme.json`
 
@@ -311,33 +128,54 @@ const absRoot = async ($: EngineInterface, root: string) => {
   return root ? `${cwd}/${root}` : cwd
 }
 
-const currentRoot = async ($: EngineInterface) => absRoot($, (await $.state.get({ plugin: 'arch-live', key: 'root' })).value ?? '')
+// The project a folder belongs to (the nearest folder up with a map, else the
+// git root, else the folder): a session or a call pointed at test/ or public/
+// still reaches the project's own map and journal, never a new empty one.
+const rootOf = async ($: EngineInterface, abs: string) =>
+  projectRootOf(abs, p => $.fs.exists(p), await $.env.get('HOME'))
+
+// The stored root is resolved when it is set; before then, the session folder's project.
+const currentRoot = async ($: EngineInterface) => {
+  const stored = (await $.state.get({ plugin: 'arch-live', key: 'root' })).value ?? ''
+  return stored ? absRoot($, stored) : rootOf($, await $.session.cwd())
+}
+
+// A root is a guess when it is not the session folder's own project: a map
+// found one level down, in a folder of repos.
+const isGuessFor = async ($: EngineInterface, root: string) => root !== (await rootOf($, await $.session.cwd()))
+
+const projectPath = async ($: EngineInterface) => currentRoot($)
+
+// Whose journal this session writes: its project, or, while the project is
+// only a guess in a folder of repos, that folder's own journal, so work is
+// never filed under a repo it did not touch.
+const journalPath = async ($: EngineInterface) =>
+  (await read($, rootGuessAtom)) ? rootOf($, await $.session.cwd()) : projectPath($)
+
+const logsDir = async ($: EngineInterface) =>
+  `${(await $.env.get('HOME')) ?? '~'}/.claude/arch-live/logs/${projectKey(await journalPath($))}`
 
 const currentTheme = async ($: EngineInterface) =>
   (await $.state.get({ plugin: 'arch-live', key: 'theme' })).value ?? DEFAULT_THEME
 
+const currentGraph = async ($: EngineInterface) => (await $.state.get({ plugin: 'arch-live', key: 'graph' })).value ?? null
+
+const projectTitle = async ($: EngineInterface, graph: ArchGraph | null) =>
+  graph?.title ?? (await projectPath($)).split('/').pop() ?? 'Project'
+
 const loadGraph = async ($: EngineInterface, root: string): Promise<ArchGraph | null> => {
   const file = inRoot(root, GRAPH_FILE)
   if (!(await $.fs.exists(file))) return null
-  const raw = parseJson(await $.fs.read(file)) as Partial<ArchGraph> | undefined
-  if (!raw || !Array.isArray(raw.nodes)) return null
-  return plain({
-    version: 1 as const,
-    title: raw.title,
-    nodes: raw.nodes
-      .filter(n => n && typeof n.id === 'string')
-      .map((n, i) => ({ ...n, kind: KINDS.includes(n.kind) ? n.kind : 'service', label: n.label || n.id, order: n.order ?? i })),
-    edges: Array.isArray(raw.edges) ? raw.edges.filter(e => e && e.from && e.to) : [],
-    focus: Array.isArray(raw.focus) ? raw.focus.slice(0, 2) : [],
-    updatedAt: raw.updatedAt ?? 0,
-  })
+  return normalizeGraph(parseJson(await $.fs.read(file)) as Partial<ArchGraph> | undefined)
 }
 
-// The session folder's own map, else the most recently updated map one level
-// down (a folder of repos), else nothing.
+// The session folder's project when it has a map (found from a subfolder too),
+// else the most recently updated map one level down (a folder of repos), else
+// the folder's project (its git root, or the folder).
 const findRoot = async ($: EngineInterface): Promise<string> => {
   const cwd = await $.session.cwd()
-  if (await $.fs.exists(GRAPH_FILE)) return cwd
+  const own = await rootOf($, cwd)
+  if (await $.fs.exists(inRoot(own, GRAPH_FILE))) return own
   const entries = await $.fs.list().catch(() => [])
   let best = { root: '', mtime: -1 }
   for (const entry of entries) {
@@ -346,70 +184,54 @@ const findRoot = async ($: EngineInterface): Promise<string> => {
     const stat = await $.fs.stat(file).catch(() => undefined)
     if (stat && stat.mtimeMs > best.mtime) best = { root: entry.name, mtime: stat.mtimeMs }
   }
-  return best.root ? `${cwd}/${best.root}` : cwd
+  return best.root ? `${cwd}/${best.root}` : own
 }
 
-const reloadAfter = async ($: EngineInterface, filePath: string) => {
-  if (!filePath.endsWith(GRAPH_FILE)) return
-  const graph = await loadGraph($, await currentRoot($)).catch(() => null)
-  if (graph) await setGraph($, graph)
-  else await switchGraph($, null)
-  await writePopout($, graph, await currentTheme($))
+// Sets the map the pane draws and notes what changed, whoever changed it.
+// A copy equal to the one shown changes nothing; `quiet` takes it without a note.
+const setGraph = async ($: EngineInterface, next: ArchGraph, quiet = false) => {
+  const before = await read($, graphAtom)
+  if (before && canon(before) === canon(next)) return
+  await update($, graphAtom, () => next)
+  const change = quiet ? null : mapDiff(before, next, await $.clock.now())
+  if (change) await update($, mapChangeAtom, prev => mergeChange(prev, change))
 }
 
-const applyUpdate = (prev: ArchGraph | null, args: UpdateArgs, now: number) => {
-  const base: ArchGraph = !prev || args.replace ? { version: 1, nodes: [], edges: [], focus: [], updatedAt: now } : prev
-  const problems: string[] = []
-  const touched: string[] = []
-  const removed = new Set(args.remove_nodes ?? [])
-  let nodes = base.nodes.filter(n => !removed.has(n.id))
-  let order = Math.max(-1, ...base.nodes.map(n => n.order)) + 1
+// A different project's map: nothing in it is "new" here.
+const switchGraph = async ($: EngineInterface, graph: ArchGraph | null) => {
+  await update($, graphAtom, () => graph)
+  await update($, mapChangeAtom, () => null)
+  await update($, mapSelAtom, () => null)
+}
 
-  for (const input of args.nodes ?? []) {
-    if (typeof input.id !== 'string' || !input.id.trim()) {
-      problems.push('a node without an id was skipped')
-      continue
-    }
-    const id = input.id.trim()
-    const kind = input.kind && KINDS.includes(input.kind) ? input.kind : undefined
-    if (input.kind && !kind) problems.push(`${id}: unknown kind "${input.kind}", kept as service`)
-    const found = nodes.find(n => n.id === id)
-    const patch = {
-      ...(input.label ? { label: input.label } : {}),
-      ...(kind ? { kind } : {}),
-      ...(input.sublabel !== undefined ? { sublabel: input.sublabel || undefined } : {}),
-      ...(input.path !== undefined ? { path: input.path || undefined } : {}),
-      ...(typeof input.line === 'number' ? { line: input.line } : {}),
-      ...(Array.isArray(input.owns) ? { owns: input.owns.filter(o => typeof o === 'string').slice(0, 8) } : {}),
-    }
-    if (found) {
-      nodes = nodes.map(n => (n.id === id ? { ...n, ...patch } : n))
-    } else {
-      // A re-map keeps what was learned about a component that keeps its id.
-      const was = prev?.nodes.find(n => n.id === id)
-      const kept = { ...(was?.files ? { files: was.files } : {}), ...(was?.breakdown ? { breakdown: was.breakdown } : {}) }
-      nodes.push({ id, label: input.label || id, kind: kind ?? 'service', order: order++, ...kept, ...patch })
-    }
-    touched.push(id)
+const writeGraph = async ($: EngineInterface, graph: ArchGraph) =>
+  $.fs.write(inRoot(await currentRoot($), GRAPH_FILE), `${JSON.stringify(graph, null, 2)}\n`)
+
+const readOpen = async ($: EngineInterface): Promise<string[]> => {
+  const raw = parseJson(await $.fs.read(`${await logsDir($)}/${VIEW_FILE}`).catch(() => '')) as { open?: unknown } | undefined
+  return Array.isArray(raw?.open) ? raw.open.filter((id): id is string => typeof id === 'string') : []
+}
+
+const saveOpen = async ($: EngineInterface, open: string[]) => {
+  const list = [...new Set(open)]
+  await update($, mapOpenAtom, () => list)
+  await $.fs.write(`${await logsDir($)}/${VIEW_FILE}`, `${JSON.stringify({ open: list, updatedAt: await $.clock.now() }, null, 2)}\n`)
+}
+
+// A component pressed in the pane, as a click in the notepad: closed, it
+// opens and its card shows; open, its card shows; showing, it closes.
+const pressComponent = async ($: EngineInterface, id: string) => {
+  const open = await read($, mapOpenAtom)
+  const selected = await read($, mapSelAtom)
+  if (!open.includes(id)) {
+    await saveOpen($, [...open, id])
+    await update($, mapSelAtom, () => id)
+  } else if (selected !== id) {
+    await update($, mapSelAtom, () => id)
+  } else {
+    await saveOpen($, open.filter(x => x !== id))
+    await update($, mapSelAtom, () => null)
   }
-
-  const ids = new Set(nodes.map(n => n.id))
-  const gone = (e: { from?: string; to?: string }) => (args.remove_edges ?? []).some(r => r.from === e.from && r.to === e.to)
-  let edges = base.edges.filter(e => ids.has(e.from) && ids.has(e.to) && !gone(e))
-  for (const input of args.edges ?? []) {
-    if (!input.from || !input.to || !ids.has(input.from) || !ids.has(input.to)) {
-      problems.push(`edge ${input.from} → ${input.to} names an unknown node and was skipped`)
-      continue
-    }
-    const style = input.style && STYLES.includes(input.style) ? input.style : undefined
-    const edge: ArchEdge = { from: input.from, to: input.to, ...(input.label ? { label: input.label } : {}), ...(style ? { style } : {}) }
-    const at = edges.findIndex(e => e.from === edge.from && e.to === edge.to)
-    edges = at >= 0 ? edges.map((e, i) => (i === at ? { ...e, ...edge } : e)) : [...edges, edge]
-  }
-
-  const focus = (args.focus ?? (touched.length <= 2 ? touched : [])).filter(id => ids.has(id)).slice(0, 2)
-  const graph: ArchGraph = plain({ version: 1, title: args.title ?? base.title, nodes, edges, focus, updatedAt: now })
-  return { graph, problems }
 }
 
 // Rewrites the browser view; only once the person has opened it, unless `force`.
@@ -423,11 +245,488 @@ const writePopout = async ($: EngineInterface, graph: ArchGraph | null, theme: A
   await $.fs.write(file, popoutHtml(renderSvg(graph, theme), theme))
 }
 
+// Hand edits to the map file (by Claude, the person, git) redraw the pane.
+const reloadAfter = async ($: EngineInterface, filePath: string) => {
+  if (!filePath.endsWith(GRAPH_FILE)) return
+  const graph = await loadGraph($, await currentRoot($)).catch(() => null)
+  if (graph) await setGraph($, graph)
+  else await switchGraph($, null)
+  await writePopout($, graph, await currentTheme($))
+}
+
+// The file a folder node opens on: a conventional entry point, else its first
+// code file, else the same one level or two down.
+const ENTRY_NAMES = ['page.tsx', 'page.ts', 'layout.tsx', 'route.ts', 'index.ts', 'index.tsx', 'index.js', 'main.ts', 'main.py', 'app.py', 'server.ts', 'server.js', 'handler.py', 'README.md']
+const CODE_FILE = /\.(tsx?|jsx?|mjs|py|go|rs|rb|java|kt|swift|sql)$/
+const SKIP_DIRS = new Set(['node_modules', 'dist', 'build', '.next'])
+
+const entryFile = async ($: EngineInterface, dir: string, depth = 0): Promise<string | undefined> => {
+  const entries = await $.fs.list(dir).catch(() => [])
+  const files = entries.filter(e => e.kind === 'file').map(e => e.name)
+  const named = ENTRY_NAMES.find(name => files.includes(name))
+  if (named) return `${dir}/${named}`
+  const code = files.filter(name => CODE_FILE.test(name)).sort()[0]
+  if (code) return `${dir}/${code}`
+  if (depth >= 2) return undefined
+  const dirs = entries
+    .filter(e => e.kind === 'dir' && !e.name.startsWith('.') && !SKIP_DIRS.has(e.name))
+    .map(e => e.name)
+    .sort()
+  for (const sub of dirs) {
+    const found = await entryFile($, `${dir}/${sub}`, depth + 1)
+    if (found) return found
+  }
+  return undefined
+}
+
+// Opens a node's code in the person's editor, inside the project's window:
+// the file at its line, or a folder's entry file. VS Code's or Cursor's CLI
+// (`code` is often Cursor's), else the system default for the file.
+const openInEditor = async ($: EngineInterface, path: string, line?: number) => {
+  const project = await currentRoot($)
+  const abs = path.startsWith('/') ? path : `${project}/${path.replace(/^\.\//, '')}`
+  const stat = await $.fs.stat(abs).catch(() => undefined)
+  if (!stat) {
+    $.ui.toast(`arch-live: ${path} is not in the project any more; re-map to fix it`)
+    return
+  }
+  const file = stat.kind === 'dir' ? await entryFile($, abs) : abs
+  const target = file ? `${file}:${stat.kind === 'dir' ? 1 : (line ?? 1)}` : abs
+  const clis = ['code', 'cursor', '/Applications/Cursor.app/Contents/Resources/app/bin/cursor']
+  for (const cli of clis) {
+    const ran = await $.process.run([cli, project, '-g', target]).catch(() => undefined)
+    if (ran && ran.exitCode === 0) return
+  }
+  const ran = await $.process.run(['open', file ?? abs]).catch(() => undefined)
+  if (!ran || ran.exitCode !== 0) $.ui.toast(`arch-live: could not open ${path}`)
+}
+
+const openPane = ($: EngineInterface) => $.ui.open({ id: PANE, title: 'Architecture' })
+
+// A pane button's work, with any failure said in a toast instead of lost.
+const act = ($: EngineInterface, what: string, work: () => Promise<unknown>) =>
+  work().catch(err => $.ui.toast(`arch-live: ${what} did not work (${errorText(err)})`))
+
+// A command or press cannot start a turn itself; queue the prompt just after.
+const submitSoon = ($: EngineInterface, text: string) => {
+  $.clock.after(50, () => {
+    $.prompt.submit({ text }).catch(err => $.ui.toast(`arch-live: could not ask Claude (${errorText(err)})`))
+  })
+}
+
+const copyText = async ($: EngineInterface, text: string) => {
+  // The desktop app is a remote surface the engine cannot copy on; pbcopy can.
+  const copied = await $.ui.copy({ text }).catch(() => ({ isCopied: false }))
+  if (copied.isCopied) return true
+  const ran = await $.process.run(['pbcopy'], { stdin: text }).catch(() => undefined)
+  return ran?.exitCode === 0
+}
+
+/* ---------- The journal on disk ---------- */
+
+// The work journal on disk (~/.claude/arch-live/logs/<project>/), what the
+// notepad reads from it, and the Journal tab's view of it.
+
+// The day file the mod owns (<date>.json); the notepad appends to <date>.web.jsonl.
+const readRawDay = async ($: EngineInterface, date: string): Promise<JournalDay> => {
+  const text = await $.fs.read(`${await logsDir($)}/${date}.json`).catch(() => undefined)
+  const raw = text ? (parseJson(text) as JournalDay | undefined) : undefined
+  return raw && Array.isArray(raw.entries) ? raw : emptyDay(date, await projectPath($))
+}
+
+const readDay = async ($: EngineInterface, date: string): Promise<JournalDay> => {
+  const day = await readRawDay($, date)
+  const web = await $.fs.read(`${await logsDir($)}/${date}.web.jsonl`).catch(() => '')
+  return web ? { ...day, entries: [...day.entries, ...parseWebLines(web)] } : day
+}
+
+// Journal writes run one at a time, so two hooks never overwrite each other's day.
+let journalQueue: Promise<unknown> = Promise.resolve()
+
+const changeDay = ($: EngineInterface, date: string, change: (day: JournalDay) => JournalDay) => {
+  const run = journalQueue.then(async () => {
+    const day = change(await readRawDay($, date))
+    await $.fs.write(`${await logsDir($)}/${date}.json`, `${JSON.stringify(plain(day), null, 2)}\n`)
+    return day
+  })
+  journalQueue = run.catch(() => undefined)
+  return run
+}
+
+// Each session on the project keeps its own small file, so sessions running
+// side by side never write the same one. The notepad lists and renames them.
+const sessionFile = async ($: EngineInterface) => `${await logsDir($)}/sessions/${await $.session.id()}.json`
+
+const changeSession = async ($: EngineInterface, change: (s: JournalSession) => JournalSession) => {
+  const file = await sessionFile($)
+  const now = await $.clock.now()
+  const prev = parseJson(await $.fs.read(file).catch(() => '')) as JournalSession | undefined
+  const base: JournalSession = prev?.id ? prev : { id: await $.session.id(), startedAt: now, lastAt: now }
+  await $.fs.write(file, `${JSON.stringify(plain(change({ ...base, lastAt: now })), null, 2)}\n`)
+}
+
+// Session names by id, for the standup and the timeline.
+const sessionNames = async ($: EngineInterface): Promise<Record<string, string>> => {
+  const dir = `${await logsDir($)}/sessions`
+  const files = (await $.fs.list(dir).catch(() => [])).filter(f => f.name.endsWith('.json'))
+  const names: Record<string, string> = {}
+  for (const f of files) {
+    const one = parseJson(await $.fs.read(`${dir}/${f.name}`).catch(() => '')) as JournalSession | undefined
+    if (one?.id && one.name) names[one.id] = one.name
+  }
+  return names
+}
+
+const appendEntry = async ($: EngineInterface, given: JournalEntry) => {
+  const entry = given.session ? given : { ...given, session: await $.session.id() }
+  const day = await changeDay($, dateKey(entry.ts), d => ({ ...d, entries: [...d.entries, entry] }))
+  await refreshJournal($).catch(() => undefined)
+  return day
+}
+
+// Keeps the day's opening map (as it stood before the first change) and its latest.
+const saveSnapshot = async ($: EngineInterface, graph: ArchGraph, before?: ArchGraph | null) => {
+  const now = await $.clock.now()
+  return changeDay($, dateKey(now), day => ({
+    ...day,
+    opening: day.opening ?? snapshotOf(before ?? graph, now - 1),
+    snapshot: snapshotOf(graph, now),
+  }))
+}
+
+// The journal's days, oldest first, from `fromDate` on.
+const loadDays = async ($: EngineInterface, fromDate: string): Promise<JournalDay[]> => {
+  const entries = await $.fs.list(await logsDir($)).catch(() => [])
+  const dates = [
+    ...new Set(
+      entries
+        .map(e => /^(\d{4}-\d{2}-\d{2})\.(?:json|web\.jsonl)$/.exec(e.name)?.[1])
+        .filter((d): d is string => d !== undefined && d >= fromDate),
+    ),
+  ].sort()
+  // The notepad keeps git.json: whether the project is a git repo, so turns can say what is committed.
+  const git = parseJson(await $.fs.read(`${await logsDir($)}/git.json`).catch(() => '')) as { repo?: boolean } | undefined
+  return resolveDays(await Promise.all(dates.map(date => readDay($, date))), { tracksCommits: git?.repo === true })
+}
+
+const recentDays = async ($: EngineInterface) => loadDays($, dateKey((await $.clock.now()) - 60 * DAY_MS))
+
+// What the notepad in the browser reads: the drawn map and the project's facts.
+const publishLive = async ($: EngineInterface) => {
+  const dir = await logsDir($)
+  const graph = await currentGraph($)
+  const theme = await currentTheme($)
+  const now = await $.clock.now()
+  const active = (await $.state.get({ plugin: 'arch-live', key: 'active' })).value ?? []
+  const overlay: Overlay = { marks: marksOf(await recentDays($)), active, ids: true }
+  await $.fs.write(`${dir}/live.svg`, renderSvg(graph, theme, undefined, overlay).svg)
+  const meta = {
+    project: await projectPath($),
+    title: await projectTitle($, graph),
+    nodes: (graph?.nodes ?? []).map(n => ({ id: n.id, label: n.label, kind: n.kind, path: n.path ?? null, line: n.line ?? null })),
+    theme: { light: theme.light, dark: theme.dark, fonts: theme.fonts, mode: theme.mode, name: theme.name ?? null, source: theme.source ?? null },
+    // For the notepad's map: today's marks and the components Claude is in now.
+    marks: overlay.marks ?? {},
+    active,
+    updatedAt: now,
+  }
+  await $.fs.write(`${dir}/meta.json`, `${JSON.stringify(meta, null, 2)}\n`)
+}
+
+// Re-reads everything the pane draws from disk: the theme, which project's map
+// to show, the map itself and the journal. For edits made outside this
+// session (another session, your editor, git) that no hook saw.
+const refreshAll = async ($: EngineInterface) => {
+  const themeText = await $.fs.read(await homeThemePath($)).catch(() => undefined)
+  const theme = themeText ? plain(normalizeTheme(parseJson(themeText))) : null
+  const isGuess = await read($, rootGuessAtom)
+  const kept = !isGuess && (await read($, rootAtom)) ? await rootOf($, await currentRoot($)) : undefined
+  const root = kept ?? (await findRoot($))
+  const graph = await loadGraph($, root).catch(() => null)
+  const isSameRoot = root === (await currentRoot($))
+  await update($, themeAtom, () => theme)
+  await update($, rootAtom, () => root)
+  const isGuessNow = !kept && (await isGuessFor($, root))
+  if (!kept) await update($, rootGuessAtom, () => isGuessNow)
+  if (graph && isSameRoot) await setGraph($, graph)
+  else await switchGraph($, graph)
+  await refreshJournal($).catch(() => undefined)
+  await writePopout($, graph, theme ?? DEFAULT_THEME).catch(() => undefined)
+  $.ui.toast(graph ? `arch-live: refreshed (${graph.nodes.length} components)` : 'arch-live: refreshed, no map found')
+}
+
+// Reloads what the Journal tab shows: the days there are, the chosen day, open items.
+const refreshJournal = async ($: EngineInterface) => {
+  const now = await $.clock.now()
+  const today = dateKey(now)
+  const days = await recentDays($)
+  // An empty choice follows today, so a session left open overnight rolls over.
+  const chosen = (await $.state.get({ plugin: 'arch-live', key: 'jdate' })).value || today
+  const dates = [...new Set([today, ...days.map(d => d.date)])].sort().reverse()
+  const day = days.find(d => d.date === chosen) ?? emptyDay(chosen, await projectPath($))
+  await update($, jdatesAtom, () => dates)
+  await update($, jdayAtom, () => plain(day))
+  await update($, openAtom, () => plain(openItems(days)))
+  await publishLive($).catch(() => undefined)
+}
+
+const showDay = async ($: EngineInterface, date: string) => {
+  const today = dateKey(await $.clock.now())
+  await update($, jdateAtom, () => (date === today ? '' : date))
+  await refreshJournal($)
+}
+
+// Marks the open todo or blocker best matching `query` as done; answers it.
+const closeItem = async (
+  $: EngineInterface,
+  types: JournalNoteType[],
+  query: string,
+  by: 'you' | 'claude' = 'you',
+): Promise<JournalNote | undefined> => {
+  const now = await $.clock.now()
+  const q = query.trim().toLowerCase()
+  const hit = [...openItems(await recentDays($))]
+    .reverse()
+    .find(n => types.includes(n.type) && (n.id === query.trim() || n.text.toLowerCase().includes(q)))
+  if (!hit) return undefined
+  await appendEntry($, { id: newId(now), ts: now, type: 'done', ref: hit.id, by })
+  return hit
+}
+
+const closeById = async ($: EngineInterface, id: string) => {
+  const now = await $.clock.now()
+  await appendEntry($, { id: newId(now), ts: now, type: 'done', ref: id, by: 'you' })
+}
+
+const addNote = async ($: EngineInterface, type: JournalNoteType, raw: string, by: 'you' | 'claude', extra: Partial<JournalNote> = {}) => {
+  const graph = await currentGraph($)
+  const tagged = resolveTag(graph, raw)
+  const now = await $.clock.now()
+  let text = tagged.text
+  let why = extra.why
+  if (type === 'decision' && !why) {
+    const parts = /^(.*?)\s+because\s+(.*)$/i.exec(text)
+    if (parts) [text, why] = [parts[1] ?? text, parts[2]]
+  }
+  const note: JournalNote = plain({
+    id: newId(now),
+    ts: now,
+    type,
+    text,
+    by,
+    component: extra.component ?? tagged.component ?? live.lastComponent,
+    ...(why ? { why } : {}),
+    ...(extra.alternatives ? { alternatives: extra.alternatives } : {}),
+  })
+  await appendEntry($, note)
+  return note
+}
+
+// Hands Claude the chosen day's state with the next prompt, once.
+const carryForward = async ($: EngineInterface, offer: CarryOffer) => {
+  await update($, pendingAtom, () => offer.context)
+  await update($, askAtom, ask => (ask === 'carry' ? null : ask))
+  await $.store.set(`carry:${projectKey(await projectPath($))}`, dateKey(await $.clock.now()))
+  $.ui.toast(`arch-live: ${dayLabel(Date.parse(`${offer.date}T12:00:00`))} will ride along with your next prompt`)
+}
+
+const carryDay = async ($: EngineInterface, date: string) => {
+  const days = await recentDays($)
+  const graph = await currentGraph($)
+  const offer = carryOffer(days.filter(d => d.date <= date), dateKey(Date.parse(`${date}T12:00:00`) + DAY_MS), graph)
+  if (offer) await carryForward($, offer)
+  else $.ui.toast('arch-live: nothing logged that day to carry forward')
+}
+
+// Saves a changed node into the map file and the pane.
+const saveNode = async ($: EngineInterface, graph: ArchGraph, id: string, change: (n: ArchNode) => ArchNode) => {
+  const next: ArchGraph = plain({ ...graph, nodes: graph.nodes.map(n => (n.id === id ? change(n) : n)) })
+  await setGraph($, next)
+  await writeGraph($, next)
+  await publishLive($).catch(() => undefined)
+}
+
+/* ---------- Standups ---------- */
+
+// The standup: its window (since the last one), Claude's write-ups, and the
+// archive of standups given.
+
+type StandupDraft = { markdown: string; scope?: string; at: number }
+type StandupRecord = {
+  id: string
+  at: number
+  since: number
+  until: number
+  title: string
+  scope: string
+  written: string | null
+  writtenAt: number | null
+  drafts: StandupDraft[]
+  brief: string
+}
+
+const standupFile = async ($: EngineInterface) => `${await logsDir($)}/standup.json`
+
+const lastStandup = async ($: EngineInterface): Promise<number> => {
+  const text = await $.fs.read(await standupFile($)).catch(() => undefined)
+  const fromFile = text ? Number((parseJson(text) as { last?: number } | undefined)?.last ?? 0) : 0
+  if (fromFile) return fromFile
+  return Number((await $.store.get(`standup:${projectKey(await projectPath($))}`)) ?? 0)
+}
+
+// Claude's write-ups since the last archive, oldest first; each one is added,
+// never replacing the last (standup-written.json is the older single file).
+const writtenFile = async ($: EngineInterface) => `${await logsDir($)}/standup-written.json`
+const draftsFile = async ($: EngineInterface) => `${await logsDir($)}/standup-drafts.json`
+
+const readDrafts = async ($: EngineInterface): Promise<StandupDraft[]> => {
+  const list = (parseJson(await $.fs.read(await draftsFile($)).catch(() => '')) as { drafts?: StandupDraft[] } | undefined)?.drafts ?? []
+  const legacy = parseJson(await $.fs.read(await writtenFile($)).catch(() => '')) as StandupDraft | undefined
+  const all = legacy?.markdown && !list.some(d => d.at === legacy.at) ? [...list, legacy] : list
+  const last = await lastStandup($)
+  return all.filter(d => d?.markdown && d.at >= last).sort((a, b) => a.at - b.at)
+}
+
+// What save_standup keeps: one more write-up, the last 20 at most.
+const saveDraft = async ($: EngineInterface, draft: StandupDraft) => {
+  const kept = (parseJson(await $.fs.read(await draftsFile($)).catch(() => '')) as { drafts?: StandupDraft[] } | undefined)?.drafts ?? []
+  await $.fs.write(await draftsFile($), `${JSON.stringify(plain({ drafts: [...kept, draft].slice(-20) }), null, 2)}\n`)
+}
+
+const archivedStandups = async ($: EngineInterface): Promise<StandupRecord[]> => {
+  const dir = `${await logsDir($)}/standups`
+  const files = (await $.fs.list(dir).catch(() => [])).filter(f => f.name.endsWith('.json'))
+  const all = await Promise.all(files.map(async f => parseJson(await $.fs.read(`${dir}/${f.name}`).catch(() => '')) as StandupRecord | undefined))
+  return all.filter((a): a is StandupRecord => !!a?.id).sort((a, b) => b.at - a.at)
+}
+
+const standupSince = async ($: EngineInterface, now: number) => {
+  const last = await lastStandup($)
+  return last > now - 14 * DAY_MS ? last : now - DAY_MS
+}
+
+const standupText = async ($: EngineInterface) => {
+  const now = await $.clock.now()
+  const since = await standupSince($, now)
+  const graph = await currentGraph($)
+  const title = await projectTitle($, graph)
+  return buildStandup({ title, since, now, days: await recentDays($), graph, sessions: await sessionNames($) })
+}
+
+// Archive & start fresh: the window's latest write-up, earlier drafts and the
+// journal brief are saved first; only then does the window move, so a failed
+// save leaves everything as it was.
+const markStandupGiven = async ($: EngineInterface): Promise<StandupRecord> => {
+  const now = await $.clock.now()
+  const since = await standupSince($, now)
+  const list = await readDrafts($)
+  const latest = list[list.length - 1]
+  const d = new Date(now)
+  const two = (n: number) => String(n).padStart(2, '0')
+  const id = `${dateKey(now)}-${two(d.getHours())}${two(d.getMinutes())}${two(d.getSeconds())}`
+  const graph = await currentGraph($)
+  const record: StandupRecord = {
+    id,
+    at: now,
+    since,
+    until: now,
+    title: await projectTitle($, graph),
+    scope: latest?.scope ?? 'all sessions',
+    written: latest?.markdown ?? null,
+    writtenAt: latest?.at ?? null,
+    drafts: list.slice(0, -1),
+    brief: await standupText($),
+  }
+  await $.fs.write(`${await logsDir($)}/standups/${id}.json`, `${JSON.stringify(plain(record), null, 2)}\n`)
+  await $.fs.write(await standupFile($), `${JSON.stringify({ last: now })}\n`)
+  await $.fs.write(await draftsFile($), `${JSON.stringify({ drafts: [] })}\n`)
+  if (await $.fs.exists(await writtenFile($))) await $.fs.write(await writtenFile($), '{}\n')
+  return record
+}
+
+// One click: the window's journal goes to Claude, which writes the standup
+// and saves it with save_standup.
+// `session` limits it to one session; `names` are the names the notepad shows
+// (the Claude app's titles), so the standup says what the sidebar says.
+const askForStandup = async ($: EngineInterface, session: string | null, names?: Record<string, string>) => {
+  const now = await $.clock.now()
+  const since = await standupSince($, now)
+  const all = await recentDays($)
+  const days = session ? all.map(d => ({ ...d, entries: d.entries.filter(e => e.session === session) })) : all
+  const sessions = { ...(await sessionNames($)), ...(names ?? {}) }
+  const graph = await currentGraph($)
+  const title = await projectTitle($, graph)
+  const brief = buildStandup({ title, since, now, days, graph, sessions })
+  const scope = session ? (sessions[session] ?? 'unnamed session') : 'all sessions'
+  submitSoon($, standupPrompt(scope, since, brief, standupDetail({ since, days, sessions })))
+  $.ui.toast('arch-live: asked Claude to write your standup; it starts when Claude is free')
+}
+
+const runStandup = async ($: EngineInterface): Promise<string> => {
+  const now = await $.clock.now()
+  const drafts = await readDrafts($)
+  const text = drafts[drafts.length - 1]?.markdown ?? (await standupText($))
+  const isCopied = await copyText($, text)
+  const record = await markStandupGiven($)
+  return `${text}\n\n_${isCopied ? 'Copied to the clipboard. ' : ''}Archived as ${record.id} (${dayLabel(now)}); the next standup starts from now._`
+}
+
+/* ---------- Mapping, styling and exporting ---------- */
+
+// What a button, a command or the notepad can start: mapping, styling and
+// exporting the diagram.
+
+const startMap = async ($: EngineInterface, folder: string) => {
+  const root = await rootOf($, folder.trim() ? await absRoot($, cleanRoot(folder)) : await currentRoot($))
+  if (root !== (await currentRoot($))) await switchGraph($, await loadGraph($, root).catch(() => null))
+  await update($, rootAtom, () => root)
+  await update($, rootGuessAtom, () => false)
+  await update($, askAtom, () => null)
+  submitSoon($, mapPrompt(root))
+  const askedAt = await $.clock.now()
+  await update($, mapAskedAtom, () => askedAt)
+  // The prompt waits while Claude is busy; say so, or the button looks dead.
+  $.ui.toast(`arch-live: asked Claude to map ${root.split('/').pop()}; it starts when Claude is free`)
+  void openPane($)
+}
+
+const startBrand = ($: EngineInterface, url: string) => {
+  const trimmed = url.trim()
+  const href = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`
+  if (!/^https?:\/\/[^\s/]+\.[^\s]+/i.test(href)) {
+    $.ui.toast('arch-live: enter a website address, like acme.com')
+    return
+  }
+  // Tracking parameters (utm_*, gclid, ...) say nothing about the brand.
+  const clean = href.replace(/[?#].*$/, '')
+  void update($, askAtom, () => null)
+  submitSoon($, brandPrompt(clean))
+  $.ui.toast(`arch-live: asked Claude to read ${clean.replace(/^https?:\/\//, '')}; it starts when Claude is free`)
+}
+
+const setDefaultTheme = async ($: EngineInterface) => {
+  await $.fs.write(await homeThemePath($), `${JSON.stringify(DEFAULT_THEME, null, 2)}\n`)
+  await update($, themeAtom, () => DEFAULT_THEME)
+  await writePopout($, await currentGraph($), DEFAULT_THEME)
+}
+
+const exportSvg = async ($: EngineInterface): Promise<string> => {
+  const graph = await currentGraph($)
+  if (!graph) return 'Nothing to export yet: run /arch-map first.'
+  const root = await currentRoot($)
+  await $.fs.write(inRoot(root, EXPORT_FILE), `${renderSvg(graph, await currentTheme($)).svg}\n`)
+  return `Wrote ${inRoot(root, EXPORT_FILE)}. Embed it with ![Architecture](${EXPORT_FILE}).`
+}
+
+/* ---------- The browser notepad ---------- */
+
 // The browser notepad: a small local server shipped with the mod, started once
 // per session and stopped with it. Without Node it falls back to a static page.
 let notepadStarting: Promise<string | undefined> | undefined
 // Why the last start failed, so the fallback says what actually went wrong.
 let notepadError: string | undefined
+
+const notepadProblem = () => notepadError ?? 'Node was not found'
 
 const startNotepad = async ($: EngineInterface): Promise<string | undefined> => {
   await publishLive($).catch(() => undefined)
@@ -641,461 +940,349 @@ const openPopout = async ($: EngineInterface) => {
       await $.process.run(['open', `${url}&s=${encodeURIComponent(await $.session.id())}`])
       return
     }
-    const graph = (await $.state.get({ plugin: 'arch-live', key: 'graph' })).value ?? null
-    await writePopout($, graph, await currentTheme($), true)
+    await writePopout($, await currentGraph($), await currentTheme($), true)
     const file = await popoutFile($)
     const ran = await $.process.run(['open', file])
     if (ran.exitCode !== 0) $.ui.toast(`arch-live: could not open the browser view (${ran.stderr.trim() || ran.exitCode})`)
-    else $.ui.toast(`arch-live: the notepad server did not start (${notepadError ?? 'Node was not found'}), so the browser view is read-only`)
+    else $.ui.toast(`arch-live: the notepad server did not start (${notepadProblem()}), so the browser view is read-only`)
   } catch (err) {
     $.ui.toast(`arch-live: ${errorText(err)}`)
   }
 }
 
-// A command or press cannot start a turn itself; queue the prompt just after.
-const submitSoon = ($: EngineInterface, text: string) => {
-  $.clock.after(50, () => {
-    $.prompt.submit({ text }).catch(err => $.ui.toast(`arch-live: could not ask Claude (${errorText(err)})`))
-  })
+/* ---------- Claude's tools ---------- */
+
+// The tools Claude calls to keep the map and the journal: how they are
+// described to Claude, and what each one does.
+
+const registerTools = async ($: EngineInterface) => {
+  for (const tool of TOOL_DEFS) await $.tool.register(tool)
 }
 
-const openPane = ($: EngineInterface) => $.ui.open({ id: PANE, title: 'Architecture' })
+// A tool that failed (a full disk, a file it could not read) still answers,
+// so Claude can say what went wrong instead of the call going unanswered.
+const failed = (what: string, error: { kind: string; message?: string }) => ({
+  result: `arch-live could not ${what}: ${error.kind === 'timeout' ? 'it took too long' : (error.message ?? 'an unknown error')}. Nothing else was changed.`,
+})
 
-// The file a folder node opens on: a conventional entry point, else its first
-// code file, else the same one level or two down.
-const ENTRY_NAMES = ['page.tsx', 'page.ts', 'layout.tsx', 'route.ts', 'index.ts', 'index.tsx', 'index.js', 'main.ts', 'main.py', 'app.py', 'server.ts', 'server.js', 'handler.py', 'README.md']
-const CODE_FILE = /\.(tsx?|jsx?|mjs|py|go|rs|rb|java|kt|swift|sql)$/
-const SKIP_DIRS = new Set(['node_modules', 'dist', 'build', '.next'])
+const toolHooks = (on: Parameters<Register>[0]) => {
+  on('tool.call', { tool: UPDATE_TOOL }, async ($, e) => {
+    const args = e as unknown as UpdateArgs
+    await update($, mapAskedAtom, () => null)
+    let moved = ''
+    if (args.root !== undefined) {
+      const given = await absRoot($, cleanRoot(args.root))
+      const root = await rootOf($, given)
+      if (root !== given) moved = given
+      await update($, rootGuessAtom, () => false)
+      // A new root, or none stored yet: start from the map already there.
+      if (root !== (await currentRoot($)) || !(await read($, rootAtom))) {
+        await update($, rootAtom, () => root)
+        const existing = await loadGraph($, root).catch(() => null)
+        await switchGraph($, existing)
+      }
+    }
+    const root = await currentRoot($)
+    const before = await read($, graphAtom)
+    const { graph, problems } = applyUpdate(before, args, await $.clock.now())
+    const turn = live.turn
+    if (turn) {
+      const had = new Set((before?.nodes ?? []).map(n => n.id))
+      const has = new Set(graph.nodes.map(n => n.id))
+      turn.added.push(...graph.nodes.filter(n => !had.has(n.id)).map(n => n.label))
+      turn.removed.push(...(before?.nodes ?? []).filter(n => !has.has(n.id)).map(n => n.label))
+    }
+    void saveSnapshot($, graph, before).catch(() => undefined)
+    await setGraph($, graph)
+    await update($, askAtom, ask => (ask === 'map' ? null : ask))
+    await writeGraph($, graph)
+    await writePopout($, graph, await currentTheme($))
+    await publishLive($).catch(() => undefined)
+    void openPane($)
+    const summary = [
+      `Diagram now has ${graph.nodes.length} components and ${graph.edges.length} connections (saved to ${inRoot(root, GRAPH_FILE)}).`,
+      ...(moved ? [`${moved} is inside the project at ${root}, so this went to that project's map; give node paths relative to ${root}.`] : []),
+    ].join('\n')
+    return { result: problems.length ? `${summary}\nSkipped: ${problems.join('; ')}` : summary }
+  }).catch(($, e, next) => failed('update the map', next.error))
 
-const entryFile = async ($: EngineInterface, dir: string, depth = 0): Promise<string | undefined> => {
-  const entries = await $.fs.list(dir).catch(() => [])
-  const files = entries.filter(e => e.kind === 'file').map(e => e.name)
-  const named = ENTRY_NAMES.find(name => files.includes(name))
-  if (named) return `${dir}/${named}`
-  const code = files.filter(name => CODE_FILE.test(name)).sort()[0]
-  if (code) return `${dir}/${code}`
-  if (depth >= 2) return undefined
-  const dirs = entries
-    .filter(e => e.kind === 'dir' && !e.name.startsWith('.') && !SKIP_DIRS.has(e.name))
-    .map(e => e.name)
-    .sort()
-  for (const sub of dirs) {
-    const found = await entryFile($, `${dir}/${sub}`, depth + 1)
-    if (found) return found
-  }
-  return undefined
+  on('tool.call', { tool: THEME_TOOL }, async ($, e) => {
+    const given = e as unknown as { fonts?: unknown }
+    const theme = plain(normalizeTheme(given.fonts ? e : { ...e, fonts: (await read($, themeAtom))?.fonts ?? DEFAULT_THEME.fonts }))
+    await $.fs.write(await homeThemePath($), `${JSON.stringify(theme, null, 2)}\n`)
+    await update($, themeAtom, () => theme)
+    const graph = await read($, graphAtom)
+    await update($, askAtom, ask => (ask === 'theme' || ask === 'brand' ? null : ask))
+    await writePopout($, graph, theme)
+    await publishLive($).catch(() => undefined)
+    void openPane($)
+    const warnings = themeWarnings(theme)
+    const saved = `Saved "${theme.name}" to ${await homeThemePath($)}.`
+    return { result: warnings.length ? `${saved}\nFix and call again: ${warnings.join('; ')}` : saved }
+  }).catch(($, e, next) => failed('save the style', next.error))
+
+  on('tool.call', { tool: DESCRIBE_TOOL }, async ($, e) => {
+    const args = e as unknown as { component?: string; files?: { path?: string; summary?: string }[] }
+    const graph = await read($, graphAtom)
+    const node = graph?.nodes.find(n => n.id === args.component)
+    if (!graph || !node) return { result: `No component "${args.component}" on the map. Use an id from ${GRAPH_FILE}.` }
+    const now = await $.clock.now()
+    const given = (args.files ?? []).filter(f => f.path && f.summary)
+    const files = { ...(node.files ?? {}) }
+    for (const f of given) files[cleanRoot(f.path)] = { summary: String(f.summary).trim().slice(0, 160), at: now }
+    const next: ArchGraph = plain({ ...graph, nodes: graph.nodes.map(n => (n.id === node.id ? { ...n, files } : n)) })
+    await setGraph($, next)
+    await writeGraph($, next)
+    return { result: `Saved ${given.length} file summar${given.length === 1 ? 'y' : 'ies'} for ${node.label}.` }
+  }).catch(($, e, next) => failed('save the file summaries', next.error))
+
+  on('tool.call', { tool: BREAKDOWN_TOOL }, async ($, e) => {
+    const args = e as unknown as { component?: string; parts?: Partial<ArchPart>[]; edges?: { from?: string; to?: string; label?: string }[] }
+    const graph = await read($, graphAtom)
+    const node = graph?.nodes.find(n => n.id === args.component)
+    if (!graph || !node) return { result: `No component "${args.component}" on the map. Use an id from ${GRAPH_FILE}.` }
+    const before = new Map((node.breakdown?.parts ?? []).map(p => [p.id, p]))
+    const parts: ArchPart[] = (args.parts ?? [])
+      .filter(p => typeof p.id === 'string' && p.id.trim() && typeof p.label === 'string')
+      .slice(0, 14)
+      .map(p => {
+        const id = String(p.id).trim()
+        const was = before.get(id)
+        return {
+          id,
+          label: String(p.label).slice(0, 60),
+          ...(p.role && PART_ROLES.includes(p.role) ? { role: p.role } : {}),
+          ...(p.path ? { path: cleanRoot(p.path) } : {}),
+          ...(typeof p.line === 'number' ? { line: p.line } : {}),
+          ...(p.summary ? { summary: String(p.summary).slice(0, 200) } : {}),
+          // An explanation stays with a part that keeps its id.
+          ...(was?.detail ? { detail: was.detail, detailAt: was.detailAt } : {}),
+        }
+      })
+    const ids = new Set([...parts.map(p => p.id), ...graph.nodes.map(n => n.id)])
+    const edges = (args.edges ?? [])
+      .filter(x => x.from && x.to && ids.has(x.from) && ids.has(x.to))
+      .map(x => ({ from: String(x.from), to: String(x.to), ...(x.label ? { label: String(x.label).slice(0, 40) } : {}) }))
+    const now = await $.clock.now()
+    await saveNode($, graph, node.id, n => ({ ...n, breakdown: { parts, edges, at: now } }))
+    return { result: `Saved ${parts.length} parts and ${edges.length} connections for ${node.label}; the notepad shows them when the component is opened.` }
+  }).catch(($, e, next) => failed('save the breakdown', next.error))
+
+  on('tool.call', { tool: EXPLAIN_TOOL }, async ($, e) => {
+    const args = e as unknown as { component?: string; part?: string; detail?: string }
+    const graph = await read($, graphAtom)
+    const node = graph?.nodes.find(n => n.id === args.component)
+    const part = node?.breakdown?.parts.find(p => p.id === args.part)
+    if (!graph || !node || !part) return { result: `No part "${args.part}" in ${args.component}'s breakdown.` }
+    const detail = String(args.detail ?? '').trim().slice(0, 6000)
+    if (!detail) return { result: 'Nothing to save: pass the explanation as detail.' }
+    const now = await $.clock.now()
+    await saveNode($, graph, node.id, n => ({
+      ...n,
+      breakdown: n.breakdown ? { ...n.breakdown, parts: n.breakdown.parts.map(p => (p.id === part.id ? { ...p, detail, detailAt: now } : p)) } : n.breakdown,
+    }))
+    return { result: `Saved. It shows when ${part.label} is opened in the notepad.` }
+  }).catch(($, e, next) => failed('save the explanation', next.error))
+
+  on('tool.call', { tool: STANDUP_TOOL }, async ($, e) => {
+    const args = e as unknown as { markdown?: string; scope?: string }
+    const markdown = String(args.markdown ?? '').trim()
+    if (!markdown) return { result: 'Nothing to save: pass the standup as markdown.' }
+    const now = await $.clock.now()
+    await saveDraft($, { markdown: markdown.slice(0, 20_000), scope: String(args.scope ?? 'all sessions').slice(0, 120), at: now })
+    await refreshJournal($).catch(() => undefined)
+    return { result: "Saved. It is on the notepad's Standup tab and in the pane's Standup tab." }
+  }).catch(($, e, next) => failed('save the standup', next.error))
+
+  on('tool.call', { tool: DECISION_TOOL }, async ($, e) => {
+    const args = e as unknown as { decision?: string; why?: string; alternatives?: string; component?: string }
+    if (!args.decision) return { result: 'decision is required.' }
+    await addNote($, 'decision', args.decision, 'claude', {
+      why: args.why,
+      alternatives: args.alternatives,
+      component: args.component,
+    })
+    return { result: 'Logged the decision in the journal.' }
+  }).catch(($, e, next) => failed('log the decision', next.error))
+
+  on('tool.call', { tool: BLOCKER_TOOL }, async ($, e) => {
+    const args = e as unknown as { text?: string; resolved?: boolean; component?: string }
+    if (!args.text) return { result: 'text is required.' }
+    if (args.resolved) {
+      const hit = await closeItem($, ['blocker'], args.text, 'claude')
+      return { result: hit ? `Marked resolved: ${hit.text}` : 'No open blocker matched; nothing changed.' }
+    }
+    await addNote($, 'blocker', args.text, 'claude', { component: args.component })
+    return { result: 'Logged the blocker in the journal.' }
+  }).catch(($, e, next) => failed('log the blocker', next.error))
+
+  on('tool.call', { tool: TODO_TOOL }, async ($, e) => {
+    const args = e as unknown as { text?: string; done?: boolean; component?: string }
+    if (!args.text) return { result: 'text is required.' }
+    if (args.done) {
+      const hit = await closeItem($, ['todo'], args.text, 'claude')
+      return { result: hit ? `Marked done: ${hit.text}` : 'No open todo matched; nothing changed.' }
+    }
+    await addNote($, 'todo', args.text, 'claude', { component: args.component })
+    return { result: 'Added the todo to the journal.' }
+  }).catch(($, e, next) => failed('add the todo', next.error))
 }
 
-// Opens a node's code in the person's editor, inside the project's window:
-// the file at its line, or a folder's entry file. VS Code's or Cursor's CLI
-// (`code` is often Cursor's), else the system default for the file.
-const openInEditor = async ($: EngineInterface, path: string, line?: number) => {
-  const project = await currentRoot($)
-  const abs = path.startsWith('/') ? path : `${project}/${path.replace(/^\.\//, '')}`
-  const stat = await $.fs.stat(abs).catch(() => undefined)
-  if (!stat) {
-    $.ui.toast(`arch-live: ${path} is not in the project any more; re-map to fix it`)
-    return
-  }
-  const file = stat.kind === 'dir' ? await entryFile($, abs) : abs
-  const target = file ? `${file}:${stat.kind === 'dir' ? 1 : (line ?? 1)}` : abs
-  const clis = ['code', 'cursor', '/Applications/Cursor.app/Contents/Resources/app/bin/cursor']
-  for (const cli of clis) {
-    const ran = await $.process.run([cli, project, '-g', target]).catch(() => undefined)
-    if (ran && ran.exitCode === 0) return
-  }
-  const ran = await $.process.run(['open', file ?? abs]).catch(() => undefined)
-  if (!ran || ran.exitCode !== 0) $.ui.toast(`arch-live: could not open ${path}`)
-}
+/* ---------- Recording turns ---------- */
 
-const setDefaultTheme = async ($: EngineInterface) => {
-  await $.fs.write(await homeThemePath($), `${JSON.stringify(DEFAULT_THEME, null, 2)}\n`)
-  await update($, themeAtom, () => DEFAULT_THEME)
-  const graph = (await $.state.get({ plugin: 'arch-live', key: 'graph' })).value ?? null
-  await writePopout($, graph, DEFAULT_THEME)
-}
+// The journal's record of work: each main-thread turn becomes one entry when
+// it completes, with the files and components its edits touched.
 
-const startMap = async ($: EngineInterface, folder: string) => {
-  const root = folder.trim() ? await absRoot($, cleanRoot(folder)) : await currentRoot($)
-  await update($, rootAtom, () => root)
-  await update($, rootGuessAtom, () => false)
-  await update($, askAtom, () => null)
-  submitSoon($, mapPrompt(root))
-  const askedAt = await $.clock.now()
-  await update($, mapAskedAtom, () => askedAt)
-  // The prompt waits while Claude is busy; say so, or the button looks dead.
-  $.ui.toast(`arch-live: asked Claude to map ${root.split('/').pop()}; it starts when Claude is free`)
-  void openPane($)
-}
-
-const startBrand = ($: EngineInterface, url: string) => {
-  const trimmed = url.trim()
-  const href = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`
-  if (!/^https?:\/\/[^\s/]+\.[^\s]+/i.test(href)) {
-    $.ui.toast('arch-live: enter a website address, like acme.com')
-    return
-  }
-  // Tracking parameters (utm_*, gclid, ...) say nothing about the brand.
-  const clean = href.replace(/[?#].*$/, '')
-  void update($, askAtom, () => null)
-  submitSoon($, brandPrompt(clean))
-  $.ui.toast(`arch-live: asked Claude to read ${clean.replace(/^https?:\/\//, '')}; it starts when Claude is free`)
-}
-
-const exportSvg = async ($: EngineInterface): Promise<string> => {
-  const graph = (await $.state.get({ plugin: 'arch-live', key: 'graph' })).value ?? null
-  if (!graph) return 'Nothing to export yet: run /arch-map first.'
-  const root = await currentRoot($)
-  await $.fs.write(inRoot(root, EXPORT_FILE), `${renderSvg(graph, await currentTheme($)).svg}\n`)
-  return `Wrote ${inRoot(root, EXPORT_FILE)}. Embed it with ![Architecture](${EXPORT_FILE}).`
-}
-
-const LOG_SCHEMA_COMPONENT = { type: 'string', description: 'The architecture node id this is about, when there is one.' }
-
-const projectPath = async ($: EngineInterface) => currentRoot($)
-
-// Whose journal this session writes: its project, or, while the project is
-// only a guess in a folder of repos, that folder's own journal, so work is
-// never filed under a repo it did not touch.
-const journalPath = async ($: EngineInterface) => ((await read($, rootGuessAtom)) ? $.session.cwd() : projectPath($))
-
-const logsDir = async ($: EngineInterface) =>
-  `${(await $.env.get('HOME')) ?? '~'}/.claude/arch-live/logs/${projectKey(await journalPath($))}`
-
-// The day file the mod owns (<date>.json); the notepad appends to <date>.web.jsonl.
-const readRawDay = async ($: EngineInterface, date: string): Promise<JournalDay> => {
-  const text = await $.fs.read(`${await logsDir($)}/${date}.json`).catch(() => undefined)
-  const raw = text ? (parseJson(text) as JournalDay | undefined) : undefined
-  return raw && Array.isArray(raw.entries) ? raw : emptyDay(date, await projectPath($))
-}
-
-const readDay = async ($: EngineInterface, date: string): Promise<JournalDay> => {
-  const day = await readRawDay($, date)
-  const web = await $.fs.read(`${await logsDir($)}/${date}.web.jsonl`).catch(() => '')
-  return web ? { ...day, entries: [...day.entries, ...parseWebLines(web)] } : day
-}
-
-// Journal writes run one at a time, so two hooks never overwrite each other's day.
-let journalQueue: Promise<unknown> = Promise.resolve()
-
-const changeDay = ($: EngineInterface, date: string, change: (day: JournalDay) => JournalDay) => {
-  const run = journalQueue.then(async () => {
-    const day = change(await readRawDay($, date))
-    await $.fs.write(`${await logsDir($)}/${date}.json`, `${JSON.stringify(plain(day), null, 2)}\n`)
-    return day
-  })
-  journalQueue = run.catch(() => undefined)
-  return run
-}
-
-// Each session on the project keeps its own small file, so sessions running
-// side by side never write the same one. The notepad lists and renames them.
-const sessionFile = async ($: EngineInterface) => `${await logsDir($)}/sessions/${await $.session.id()}.json`
-
-const changeSession = async ($: EngineInterface, change: (s: JournalSession) => JournalSession) => {
-  const file = await sessionFile($)
-  const now = await $.clock.now()
-  const prev = parseJson(await $.fs.read(file).catch(() => '')) as JournalSession | undefined
-  const base: JournalSession = prev?.id ? prev : { id: await $.session.id(), startedAt: now, lastAt: now }
-  await $.fs.write(file, `${JSON.stringify(plain(change({ ...base, lastAt: now })), null, 2)}\n`)
-}
-
-// Session names by id, for the standup.
-const sessionNames = async ($: EngineInterface): Promise<Record<string, string>> => {
-  const dir = `${await logsDir($)}/sessions`
-  const files = (await $.fs.list(dir).catch(() => [])).filter(f => f.name.endsWith('.json'))
-  const names: Record<string, string> = {}
-  for (const f of files) {
-    const one = parseJson(await $.fs.read(`${dir}/${f.name}`).catch(() => '')) as JournalSession | undefined
-    if (one?.id && one.name) names[one.id] = one.name
-  }
-  return names
-}
-
-const appendEntry = async ($: EngineInterface, given: JournalEntry) => {
-  const entry = given.session ? given : { ...given, session: await $.session.id() }
-  const day = await changeDay($, dateKey(entry.ts), d => ({ ...d, entries: [...d.entries, entry] }))
-  await refreshJournal($).catch(() => undefined)
-  return day
-}
-
-// Keeps the day's opening map (as it stood before the first change) and its latest.
-const saveSnapshot = async ($: EngineInterface, graph: ArchGraph, before?: ArchGraph | null) => {
-  const now = await $.clock.now()
-  return changeDay($, dateKey(now), day => ({
-    ...day,
-    opening: day.opening ?? snapshotOf(before ?? graph, now - 1),
-    snapshot: snapshotOf(graph, now),
-  }))
-}
-
-// The journal's days, oldest first, from `fromDate` on.
-const loadDays = async ($: EngineInterface, fromDate: string): Promise<JournalDay[]> => {
-  const entries = await $.fs.list(await logsDir($)).catch(() => [])
-  const dates = [
-    ...new Set(
-      entries
-        .map(e => /^(\d{4}-\d{2}-\d{2})\.(?:json|web\.jsonl)$/.exec(e.name)?.[1])
-        .filter((d): d is string => d !== undefined && d >= fromDate),
-    ),
-  ].sort()
-  return resolveDays(await Promise.all(dates.map(date => readDay($, date))))
-}
-
-const recentDays = async ($: EngineInterface) => loadDays($, dateKey((await $.clock.now()) - 60 * DAY_MS))
-
-// Open marks (component → its latest open mark), drawn on the map. A mark
-// stays until it is cleared, whatever day it was made.
-const marksOf = (days: (JournalDay | null)[]): Record<string, string> => {
-  const marks: Record<string, string> = {}
-  const entries = days.flatMap(d => d?.entries ?? []).sort((a, b) => a.ts - b.ts)
-  for (const e of entries) if (isNote(e) && e.type === 'mark' && e.component && !e.done) marks[e.component] = e.text
-  return marks
-}
-
-// What the notepad in the browser reads: the drawn map and the project's facts.
-const publishLive = async ($: EngineInterface) => {
-  const dir = await logsDir($)
-  const graph = (await $.state.get({ plugin: 'arch-live', key: 'graph' })).value ?? null
-  const theme = await currentTheme($)
-  const now = await $.clock.now()
-  const active = (await $.state.get({ plugin: 'arch-live', key: 'active' })).value ?? []
-  const overlay: Overlay = { marks: marksOf(await recentDays($)), active, ids: true }
-  await $.fs.write(`${dir}/live.svg`, renderSvg(graph, theme, undefined, overlay).svg)
-  const meta = {
-    project: await projectPath($),
-    title: graph?.title ?? (await projectPath($)).split('/').pop() ?? 'Project',
-    nodes: (graph?.nodes ?? []).map(n => ({ id: n.id, label: n.label, kind: n.kind, path: n.path ?? null, line: n.line ?? null })),
-    theme: { light: theme.light, dark: theme.dark, fonts: theme.fonts, mode: theme.mode, name: theme.name ?? null, source: theme.source ?? null },
-    // For the notepad's map: today's marks and the components Claude is in now.
-    marks: overlay.marks ?? {},
-    active,
-    updatedAt: now,
-  }
-  await $.fs.write(`${dir}/meta.json`, `${JSON.stringify(meta, null, 2)}\n`)
-}
-
-// Reloads what the Journal tab shows: the days there are, the chosen day, open items.
-// Re-reads everything the pane draws from disk: the theme, which project's map
-// to show, the map itself and the journal. For edits made outside this
-// session (another session, your editor, git) that no hook saw.
-const refreshAll = async ($: EngineInterface) => {
-  const themeText = await $.fs.read(await homeThemePath($)).catch(() => undefined)
-  const theme = themeText ? plain(normalizeTheme(parseJson(themeText))) : null
-  const isGuess = await read($, rootGuessAtom)
-  const kept = !isGuess && (await read($, rootAtom)) ? await currentRoot($) : undefined
-  const root = kept ?? (await findRoot($))
-  const graph = await loadGraph($, root).catch(() => null)
-  const isSameRoot = root === (await currentRoot($))
-  await update($, themeAtom, () => theme)
-  await update($, rootAtom, () => root)
+// In a folder of repos, a turn belongs to the repo its edits were in: the
+// pane switches there and the turn is logged in that repo's journal.
+const followWork = async ($: EngineInterface, done: TurnDraft) => {
   const cwd = await $.session.cwd()
-  if (!kept) await update($, rootGuessAtom, () => root !== cwd)
-  if (graph && isSameRoot) await setGraph($, graph)
+  const root = await currentRoot($)
+  if (done.files.size === 0) return
+  const abs = [...done.files.values()].map(f => (f.path.startsWith('/') ? f.path : `${root}/${f.path}`))
+  const counts = new Map<string, number>()
+  for (const p of abs) {
+    const rest = p.startsWith(`${cwd}/`) ? p.slice(cwd.length + 1) : ''
+    const child = rest.includes('/') ? rest.split('/')[0] : ''
+    if (child && !child.startsWith('.')) counts.set(child, (counts.get(child) ?? 0) + 1)
+  }
+  const top = [...counts.entries()].sort((a, b) => b[1] - a[1])[0]
+  if (!top) return
+  const next = await rootOf($, `${cwd}/${top[0]}`)
+  if (next === root && !(await read($, rootGuessAtom))) return
+  const graph = next === root ? await read($, graphAtom) : await loadGraph($, next).catch(() => null)
+  await update($, rootAtom, () => next)
+  await update($, rootGuessAtom, () => false)
+  if (next === root) await update($, graphAtom, () => graph)
   else await switchGraph($, graph)
-  await refreshJournal($).catch(() => undefined)
-  await writePopout($, graph, theme ?? DEFAULT_THEME).catch(() => undefined)
-  $.ui.toast(graph ? `arch-live: refreshed (${graph.nodes.length} components)` : 'arch-live: refreshed, no map found')
-}
-
-const refreshJournal = async ($: EngineInterface) => {
-  const now = await $.clock.now()
-  const today = dateKey(now)
-  const days = await recentDays($)
-  // An empty choice follows today, so a session left open overnight rolls over.
-  const chosen = (await $.state.get({ plugin: 'arch-live', key: 'jdate' })).value || today
-  const dates = [...new Set([today, ...days.map(d => d.date)])].sort().reverse()
-  const day = days.find(d => d.date === chosen) ?? emptyDay(chosen, await projectPath($))
-  await update($, jdatesAtom, () => dates)
-  await update($, jdayAtom, () => plain(day))
-  await update($, openAtom, () => plain(openItems(days)))
-  await publishLive($).catch(() => undefined)
-}
-
-const showDay = async ($: EngineInterface, date: string) => {
-  const today = dateKey(await $.clock.now())
-  await update($, jdateAtom, () => (date === today ? '' : date))
-  await refreshJournal($)
-}
-
-const standupFile = async ($: EngineInterface) => `${await logsDir($)}/standup.json`
-
-const lastStandup = async ($: EngineInterface): Promise<number> => {
-  const text = await $.fs.read(await standupFile($)).catch(() => undefined)
-  const fromFile = text ? Number((parseJson(text) as { last?: number } | undefined)?.last ?? 0) : 0
-  if (fromFile) return fromFile
-  return Number((await $.store.get(`standup:${projectKey(await projectPath($))}`)) ?? 0)
-}
-
-type StandupDraft = { markdown: string; scope?: string; at: number }
-type StandupRecord = {
-  id: string
-  at: number
-  since: number
-  until: number
-  title: string
-  scope: string
-  written: string | null
-  writtenAt: number | null
-  drafts: StandupDraft[]
-  brief: string
-}
-
-// Claude's write-ups since the last archive, oldest first; each one is added,
-// never replacing the last (standup-written.json is the older single file).
-const writtenFile = async ($: EngineInterface) => `${await logsDir($)}/standup-written.json`
-const draftsFile = async ($: EngineInterface) => `${await logsDir($)}/standup-drafts.json`
-const readDrafts = async ($: EngineInterface): Promise<StandupDraft[]> => {
-  const list = (parseJson(await $.fs.read(await draftsFile($)).catch(() => '')) as { drafts?: StandupDraft[] } | undefined)?.drafts ?? []
-  const legacy = parseJson(await $.fs.read(await writtenFile($)).catch(() => '')) as StandupDraft | undefined
-  const all = legacy?.markdown && !list.some(d => d.at === legacy.at) ? [...list, legacy] : list
-  const last = await lastStandup($)
-  return all.filter(d => d?.markdown && d.at >= last).sort((a, b) => a.at - b.at)
-}
-
-const archivedStandups = async ($: EngineInterface): Promise<StandupRecord[]> => {
-  const dir = `${await logsDir($)}/standups`
-  const files = (await $.fs.list(dir).catch(() => [])).filter(f => f.name.endsWith('.json'))
-  const all = await Promise.all(files.map(async f => parseJson(await $.fs.read(`${dir}/${f.name}`).catch(() => '')) as StandupRecord | undefined))
-  return all.filter((a): a is StandupRecord => !!a?.id).sort((a, b) => b.at - a.at)
-}
-
-// Archive & start fresh: the window's latest write-up, earlier drafts and the
-// journal brief are saved first; only then does the window move, so a failed
-// save leaves everything as it was.
-const markStandupGiven = async ($: EngineInterface): Promise<StandupRecord> => {
-  const now = await $.clock.now()
-  const since = await standupSince($, now)
-  const list = await readDrafts($)
-  const latest = list[list.length - 1]
-  const d = new Date(now)
-  const two = (n: number) => String(n).padStart(2, '0')
-  const id = `${dateKey(now)}-${two(d.getHours())}${two(d.getMinutes())}${two(d.getSeconds())}`
-  const graph = (await $.state.get({ plugin: 'arch-live', key: 'graph' })).value ?? null
-  const record: StandupRecord = {
-    id,
-    at: now,
-    since,
-    until: now,
-    title: graph?.title ?? (await projectPath($)).split('/').pop() ?? 'Project',
-    scope: latest?.scope ?? 'all sessions',
-    written: latest?.markdown ?? null,
-    writtenAt: latest?.at ?? null,
-    drafts: list.slice(0, -1),
-    brief: await standupText($),
-  }
-  await $.fs.write(`${await logsDir($)}/standups/${id}.json`, `${JSON.stringify(plain(record), null, 2)}\n`)
-  await $.fs.write(await standupFile($), `${JSON.stringify({ last: now })}\n`)
-  await $.fs.write(await draftsFile($), `${JSON.stringify({ drafts: [] })}\n`)
-  if (await $.fs.exists(await writtenFile($))) await $.fs.write(await writtenFile($), '{}\n')
-  return record
-}
-
-const standupSince = async ($: EngineInterface, now: number) => {
-  const last = await lastStandup($)
-  return last > now - 14 * DAY_MS ? last : now - DAY_MS
-}
-
-
-const standupPrompt = (scope: string, since: number, brief: string, detail: string) =>
-  [
-    `Write my standup notes for this morning's engineering meeting from my arch-live work journal (${scope}, since ${dayLabel(since)} ${timeLabel(since)}).`,
-    'Markdown, in this order. Short plain bullets about outcomes, not activity. Group related work into one bullet and start it with the area in bold when that helps. No file paths unless they matter to the team.',
-    '## Accomplished\n## In progress\n## Blockers (write "None" when there are none)\n## Next\n## Decisions (only when there are any)\n## Heads-up (only when useful: risks, asks, things others should know)',
-    'Leave out noise: repeated or test notes, and checks of the tooling itself, unless that was the work. When the journal is unclear, you may read `git log` in the project for the same window.',
-    `Then call ${STANDUP_TOOL} once with the Markdown and scope "${scope}". Reply with one short line when done.`,
-    '',
-    'Journal brief:',
-    '',
-    brief,
-    '',
-    'Every turn and note, oldest first:',
-    '',
-    detail,
-  ].join('\n')
-
-// One click: the window's journal goes to Claude, which writes the standup
-// and saves it with save_standup.
-// `session` limits it to one session; `names` are the names the notepad shows
-// (the Claude app's titles), so the standup says what the sidebar says.
-const askForStandup = async ($: EngineInterface, session: string | null, names?: Record<string, string>) => {
-  const now = await $.clock.now()
-  const since = await standupSince($, now)
-  const all = await recentDays($)
-  const days = session ? all.map(d => ({ ...d, entries: d.entries.filter(e => e.session === session) })) : all
-  const sessions = { ...(await sessionNames($)), ...(names ?? {}) }
-  const graph = (await $.state.get({ plugin: 'arch-live', key: 'graph' })).value ?? null
-  const title = graph?.title ?? (await projectPath($)).split('/').pop() ?? 'Project'
-  const brief = buildStandup({ title, since, now, days, graph, sessions })
-  const scope = session ? (sessions[session] ?? 'unnamed session') : 'all sessions'
-  submitSoon($, standupPrompt(scope, since, brief, standupDetail({ since, days, sessions })))
-  $.ui.toast('arch-live: asked Claude to write your standup; it starts when Claude is free')
-}
-
-const standupText = async ($: EngineInterface) => {
-  const now = await $.clock.now()
-  const since = await standupSince($, now)
-  const graph = (await $.state.get({ plugin: 'arch-live', key: 'graph' })).value ?? null
-  const title = graph?.title ?? (await projectPath($)).split('/').pop() ?? 'Project'
-  return buildStandup({ title, since, now, days: await recentDays($), graph, sessions: await sessionNames($) })
-}
-
-const copyText = async ($: EngineInterface, text: string) => {
-  // The desktop app is a remote surface the engine cannot copy on; pbcopy can.
-  const copied = await $.ui.copy({ text }).catch(() => ({ isCopied: false }))
-  if (copied.isCopied) return true
-  const ran = await $.process.run(['pbcopy'], { stdin: text }).catch(() => undefined)
-  return ran?.exitCode === 0
-}
-
-// Marks the open todo or blocker best matching `query` as done; answers it.
-const closeItem = async (
-  $: EngineInterface,
-  types: JournalNoteType[],
-  query: string,
-  by: 'you' | 'claude' = 'you',
-): Promise<JournalNote | undefined> => {
-  const now = await $.clock.now()
-  const q = query.trim().toLowerCase()
-  const hit = [...openItems(await recentDays($))]
-    .reverse()
-    .find(n => types.includes(n.type) && (n.id === query.trim() || n.text.toLowerCase().includes(q)))
-  if (!hit) return undefined
-  await appendEntry($, { id: newId(now), ts: now, type: 'done', ref: hit.id, by })
-  return hit
-}
-
-const addNote = async ($: EngineInterface, type: JournalNoteType, raw: string, by: 'you' | 'claude', extra: Partial<JournalNote> = {}) => {
-  const graph = (await $.state.get({ plugin: 'arch-live', key: 'graph' })).value ?? null
-  const tagged = resolveTag(graph, raw)
-  const now = await $.clock.now()
-  let text = tagged.text
-  let why = extra.why
-  if (type === 'decision' && !why) {
-    const parts = /^(.*?)\s+because\s+(.*)$/i.exec(text)
-    if (parts) [text, why] = [parts[1] ?? text, parts[2]]
-  }
-  const note: JournalNote = plain({
-    id: newId(now),
-    ts: now,
-    type,
-    text,
-    by,
-    component: extra.component ?? tagged.component ?? lastComponent,
-    ...(why ? { why } : {}),
-    ...(extra.alternatives ? { alternatives: extra.alternatives } : {}),
+  const files = new Map<string, JournalFile>()
+  const before = [...done.files.values()]
+  abs.forEach((p, i) => {
+    const rel = p.startsWith(`${next}/`) ? p.slice(next.length + 1) : p
+    const f = before[i]
+    if (f) files.set(rel, { ...f, path: rel })
   })
-  await appendEntry($, note)
-  return note
+  done.files = files
+  done.components = new Set([...files.keys()].map(r => componentFor(graph, r)).filter((c): c is string => !!c))
+  await changeSession($, ({ endedAt: _ended, ...open }) => open).catch(() => undefined)
 }
 
-const runStandup = async ($: EngineInterface): Promise<string> => {
-  const now = await $.clock.now()
-  const drafts = await readDrafts($)
-  const text = drafts[drafts.length - 1]?.markdown ?? (await standupText($))
-  const isCopied = await copyText($, text)
-  const record = await markStandupGiven($)
-  return `${text}\n\n_${isCopied ? 'Copied to the clipboard. ' : ''}Archived as ${record.id} (${dayLabel(now)}); the next standup starts from now._`
+const recordFile = async ($: EngineInterface, absPath: string, created: boolean) => {
+  const turn = live.turn
+  if (!turn) return
+  const project = await projectPath($)
+  const rel = absPath.startsWith(`${project}/`) ? absPath.slice(project.length + 1) : absPath
+  if (rel.endsWith(GRAPH_FILE) || rel.endsWith(POPOUT_FILE)) return
+  const file = turn.files.get(rel) ?? { path: rel, created, edits: 0 }
+  turn.files.set(rel, { ...file, edits: file.edits + 1 })
+  const component = componentFor(await currentGraph($), rel)
+  if (component) {
+    const isNew = !turn.components.has(component)
+    turn.components.add(component)
+    live.lastComponent = component
+    if (isNew) {
+      await update($, activeAtom, () => [...(live.turn?.components ?? [])])
+      await publishLive($).catch(() => undefined)
+    }
+  }
+}
+
+const turnHooks = (on: Parameters<Register>[0]) => {
+  // Hand edits to the graph file (by Claude or by the person) redraw the pane.
+  on('tool.call', { tool: 'Write' }, async ($, e, next) => {
+    const file = typeof e.file_path === 'string' ? e.file_path : ''
+    const existed = file ? await $.fs.exists(file).catch(() => true) : true
+    const ran = await next(e)
+    if (!file) return ran
+    await reloadAfter($, file)
+    if (ran.deny === undefined && !ran.isError) await recordFile($, file, !existed)
+    return ran
+  })
+  on('tool.call', { tool: 'Edit' }, async ($, e, next) => {
+    const file = typeof e.file_path === 'string' ? e.file_path : ''
+    const ran = await next(e)
+    if (!file) return ran
+    await reloadAfter($, file)
+    if (ran.deny === undefined && !ran.isError) await recordFile($, file, false)
+    return ran
+  })
+  on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
+    const ran = await next(e)
+    if (live.turn) live.turn.commands += 1
+    // A test command's counts: the turn keeps its last run.
+    if (live.turn && ran.deny === undefined && !ran.isError && ran.result && !ran.result.backgroundTaskId) {
+      const run = testRun(String(e.command ?? ''), `${ran.result.stdout ?? ''}\n${ran.result.stderr ?? ''}`)
+      if (run) live.turn.tests = run
+    }
+    return ran
+  })
+
+  on('prompt.submit', async ($, e, next) => {
+    boot($)
+    const pending = await read($, pendingAtom)
+    // A background task's notice arrives as a prompt too; it is not the person's request.
+    const isNotice = e.text.trim().startsWith('<task-notification>')
+    const isTyped = e.text.trim() !== '' && !e.text.trim().startsWith('/') && !isNotice
+    const result = await next(pending && isTyped ? { ...e, context: [...(e.context ?? []), pending] } : e)
+    if (pending && isTyped && result.drop === undefined) await update($, pendingAtom, () => null)
+    if (result.drop === undefined && (isTyped || isNotice)) {
+      if (isTyped) {
+        const first = distill(e.text, { mode: 'request', max: 1 }).statements[0]?.text ?? e.text
+        const name = first.replace(/\s+/g, ' ').trim().slice(0, 48)
+        await changeSession($, s => (s.isNamed || s.name ? s : { ...s, name })).catch(() => undefined)
+      }
+      // A notice's turn still counts its edits, under a plain request.
+      live.turn = {
+        ts: await $.clock.now(),
+        request: isNotice ? 'A background task finished.' : e.text,
+        files: new Map(),
+        components: new Set(),
+        commands: 0,
+        added: [],
+        removed: [],
+      }
+    }
+    return result
+  })
+
+  on('turn.complete', async ($, e, next) => {
+    boot($)
+    const result = await next(e)
+    const done = live.turn
+    if (!e.agentId && done) {
+      live.turn = undefined
+      await followWork($, done).catch(() => undefined)
+      await changeSession($, s => s).catch(() => undefined)
+      await update($, activeAtom, () => [])
+      await publishLive($).catch(() => undefined)
+      const request = distill(done.request, { mode: 'request', max: 2 }).statements.map(s => s.text).join(' ')
+      const summary = distill(e.answer, { mode: 'log', max: 3 }).statements.map(s => s.text)
+      const isWorth = done.files.size > 0 || done.added.length > 0 || done.removed.length > 0 || summary.length > 0 || !!done.tests
+      if (isWorth) {
+        await appendEntry($, {
+          id: newId(done.ts),
+          ts: done.ts,
+          type: 'turn',
+          request: request || done.request.slice(0, 160),
+          summary,
+          files: [...done.files.values()],
+          components: [...done.components],
+          commands: done.commands,
+          ...(done.added.length || done.removed.length ? { arch: { added: done.added, removed: done.removed } } : {}),
+          ...(done.tests ? { tests: done.tests } : {}),
+        }).catch(() => undefined)
+      }
+    }
+    return result
+  })
+}
+
+/* ---------- Slash commands ---------- */
+
+// The mod's slash commands.
+
+const registerCommands = async ($: EngineInterface) => {
+  for (const command of COMMAND_DEFS) await $.command.register(command)
 }
 
 const runCommand = async ($: EngineInterface, command: string, args: string): Promise<string> => {
@@ -1125,7 +1312,7 @@ const runCommand = async ($: EngineInterface, command: string, args: string): Pr
     case 'notepad': {
       await openPopout($)
       const url = await liveNotepad($)
-      return url ? 'Notepad opened in your browser.' : `Opened the read-only browser view: the notepad server did not start (${notepadError ?? 'Node was not found'}).`
+      return url ? 'Notepad opened in your browser.' : `Opened the read-only browser view: the notepad server did not start (${notepadProblem()}).`
     }
     case 'done': {
       if (!args.trim()) return 'Usage: /done <words from the todo or blocker>'
@@ -1146,268 +1333,26 @@ const runCommand = async ($: EngineInterface, command: string, args: string): Pr
   }
 }
 
-// The turn being recorded: what was asked, what changed. Module state is fine
-// here: a reload mid-turn only loses that turn's entry.
-type TurnDraft = {
-  ts: number
-  request: string
-  files: Map<string, JournalFile>
-  components: Set<string>
-  commands: number
-  added: string[]
-  removed: string[]
-}
-let turn: TurnDraft | undefined
-let lastComponent: string | undefined
-
-// In a folder of repos, a turn belongs to the repo its edits were in: the
-// pane switches there and the turn is logged in that repo's journal.
-const followWork = async ($: EngineInterface, done: TurnDraft) => {
-  const cwd = await $.session.cwd()
-  const root = await currentRoot($)
-  if (done.files.size === 0) return
-  const abs = [...done.files.values()].map(f => (f.path.startsWith('/') ? f.path : `${root}/${f.path}`))
-  const counts = new Map<string, number>()
-  for (const p of abs) {
-    const rest = p.startsWith(`${cwd}/`) ? p.slice(cwd.length + 1) : ''
-    const child = rest.includes('/') ? rest.split('/')[0] : ''
-    if (child && !child.startsWith('.')) counts.set(child, (counts.get(child) ?? 0) + 1)
-  }
-  const top = [...counts.entries()].sort((a, b) => b[1] - a[1])[0]
-  if (!top) return
-  const next = `${cwd}/${top[0]}`
-  if (next === root && !(await read($, rootGuessAtom))) return
-  const graph = next === root ? await read($, graphAtom) : await loadGraph($, next).catch(() => null)
-  await update($, rootAtom, () => next)
-  await update($, rootGuessAtom, () => false)
-  if (next === root) await update($, graphAtom, () => graph)
-  else await switchGraph($, graph)
-  const files = new Map<string, JournalFile>()
-  const before = [...done.files.values()]
-  abs.forEach((p, i) => {
-    const rel = p.startsWith(`${next}/`) ? p.slice(next.length + 1) : p
-    const f = before[i]
-    if (f) files.set(rel, { ...f, path: rel })
-  })
-  done.files = files
-  done.components = new Set([...files.keys()].map(r => componentFor(graph, r)).filter((c): c is string => !!c))
-  await changeSession($, ({ endedAt: _ended, ...open }) => open).catch(() => undefined)
-}
-
-const recordFile = async ($: EngineInterface, absPath: string, created: boolean) => {
-  if (!turn) return
-  const project = await projectPath($)
-  const rel = absPath.startsWith(`${project}/`) ? absPath.slice(project.length + 1) : absPath
-  if (rel.endsWith(GRAPH_FILE) || rel.endsWith(POPOUT_FILE)) return
-  const file = turn.files.get(rel) ?? { path: rel, created, edits: 0 }
-  turn.files.set(rel, { ...file, edits: file.edits + 1 })
-  const graph = (await $.state.get({ plugin: 'arch-live', key: 'graph' })).value ?? null
-  const component = componentFor(graph, rel)
-  if (component) {
-    const isNew = !turn.components.has(component)
-    turn.components.add(component)
-    lastComponent = component
-    if (isNew) {
-      await update($, activeAtom, () => [...(turn?.components ?? [])])
-      await publishLive($).catch(() => undefined)
+const commandHooks = (on: Parameters<Register>[0]) => {
+  // One hook answers every command of this mod, so a failure comes back as
+  // text instead of the run going unanswered.
+  on('command.run', async ($, e, next) => {
+    const name = e.command.replace(/^arch-live:/, '')
+    if (!COMMANDS.includes(name)) return next(e)
+    try {
+      return { text: await runCommand($, name, e.args ?? '') }
+    } catch (err) {
+      return { text: `arch-live: /${name} failed: ${errorText(err)}` }
     }
-  }
+  })
 }
 
-// Hands Claude the chosen day's state with the next prompt, once.
-const carryForward = async ($: EngineInterface, offer: CarryOffer) => {
-  await update($, pendingAtom, () => offer.context)
-  await update($, askAtom, ask => (ask === 'carry' ? null : ask))
-  await $.store.set(`carry:${projectKey(await projectPath($))}`, dateKey(await $.clock.now()))
-  $.ui.toast(`arch-live: ${dayLabel(Date.parse(`${offer.date}T12:00:00`))} will ride along with your next prompt`)
-}
+/* ---------- Session start and end ---------- */
 
-const carryDay = async ($: EngineInterface, date: string) => {
-  const days = await recentDays($)
-  const graph = (await $.state.get({ plugin: 'arch-live', key: 'graph' })).value ?? null
-  const offer = carryOffer(days.filter(d => d.date <= date), dateKey(Date.parse(`${date}T12:00:00`) + DAY_MS), graph)
-  if (offer) await carryForward($, offer)
-  else $.ui.toast('arch-live: nothing logged that day to carry forward')
-}
+// A session's start and end: the tools and commands, the project and map it
+// shows, and the guide every prompt carries.
 
-const closeById = async ($: EngineInterface, id: string) => {
-  const now = await $.clock.now()
-  await appendEntry($, { id: newId(now), ts: now, type: 'done', ref: id, by: 'you' })
-}
-
-// JSON with every object's keys in order, so two copies of one map compare equal.
-const canon = (value: unknown) =>
-  JSON.stringify(value, (_key, v: unknown) =>
-    v && typeof v === 'object' && !Array.isArray(v) ? Object.fromEntries(Object.entries(v).sort(([a], [b]) => a.localeCompare(b))) : v,
-  )
-
-// What changed between two versions of the map, or null when nothing did.
-const mapDiff = (before: ArchGraph | null, after: ArchGraph, at: number): MapChange | null => {
-  if (!before) return null
-  const old = new Map(before.nodes.map(n => [n.id, n]))
-  const ids = new Set(after.nodes.map(n => n.id))
-  const sig = (n: ArchNode) => canon({ ...n, order: 0 })
-  const added = after.nodes.filter(n => !old.has(n.id)).map(n => n.id)
-  const changed = after.nodes.filter(n => old.has(n.id) && sig(n) !== sig(old.get(n.id)!)).map(n => n.id)
-  const removed = before.nodes.filter(n => !ids.has(n.id)).map(n => n.label)
-  const key = (e: ArchEdge) => `${e.from}>${e.to}|${e.label ?? ''}|${e.style ?? ''}`
-  const had = new Set(before.edges.map(key))
-  const has = new Set(after.edges.map(key))
-  const links = [...has].filter(k => !had.has(k)).length + [...had].filter(k => !has.has(k)).length
-  return added.length || changed.length || removed.length || links ? { at, added, changed, removed, links } : null
-}
-
-// Changes close together read as one: what was added stays "new" while it
-// is edited further.
-const mergeChange = (prev: MapChange | null, next: MapChange): MapChange => {
-  if (!prev || next.at - prev.at > FRESH_MS) return next
-  const added = [...new Set([...prev.added, ...next.added])]
-  return {
-    at: next.at,
-    added,
-    changed: [...new Set([...prev.changed, ...next.changed])].filter(id => !added.includes(id)),
-    removed: [...new Set([...prev.removed, ...next.removed])],
-    links: prev.links + next.links,
-  }
-}
-
-// Sets the map the pane draws and notes what changed, whoever changed it.
-// A copy equal to the one shown changes nothing; `quiet` takes it without a note.
-const setGraph = async ($: EngineInterface, next: ArchGraph, quiet = false) => {
-  const before = await read($, graphAtom)
-  if (before && canon(before) === canon(next)) return
-  await update($, graphAtom, () => next)
-  const change = quiet ? null : mapDiff(before, next, await $.clock.now())
-  if (change) await update($, mapChangeAtom, prev => mergeChange(prev, change))
-}
-
-// A different project's map: nothing in it is "new" here.
-const switchGraph = async ($: EngineInterface, graph: ArchGraph | null) => {
-  await update($, graphAtom, () => graph)
-  await update($, mapChangeAtom, () => null)
-  await update($, mapSelAtom, () => null)
-}
-
-const readOpen = async ($: EngineInterface): Promise<string[]> => {
-  const raw = parseJson(await $.fs.read(`${await logsDir($)}/${VIEW_FILE}`).catch(() => '')) as { open?: unknown } | undefined
-  return Array.isArray(raw?.open) ? raw.open.filter((id): id is string => typeof id === 'string') : []
-}
-
-const saveOpen = async ($: EngineInterface, open: string[]) => {
-  const list = [...new Set(open)]
-  await update($, mapOpenAtom, () => list)
-  await $.fs.write(`${await logsDir($)}/${VIEW_FILE}`, `${JSON.stringify({ open: list, updatedAt: await $.clock.now() }, null, 2)}\n`)
-}
-
-type RecentEdits = Record<string, { edits: number; at: number; files: Record<string, number> }>
-
-// Edits by component over the last half hour: logged turns, plus the turn
-// running now.
-const recentEdits = (graph: ArchGraph | null, days: JournalDay[], now: number): RecentEdits => {
-  const out: RecentEdits = {}
-  const add = (path: string, edits: number, at: number) => {
-    const id = componentFor(graph, path)
-    if (!id) return
-    const one = (out[id] ??= { edits: 0, at: 0, files: {} })
-    one.edits += edits
-    one.at = Math.max(one.at, at)
-    one.files[path] = (one.files[path] ?? 0) + edits
-  }
-  for (const e of days.flatMap(d => d.entries)) {
-    if (e.type !== 'turn' || now - e.ts > RECENT_MS) continue
-    for (const f of e.files) add(f.path, f.edits, e.ts)
-  }
-  for (const f of turn?.files.values() ?? []) add(f.path, f.edits, turn?.ts ?? now)
-  return out
-}
-
-// A component pressed in the pane, as a click in the notepad: closed, it
-// opens and its card shows; open, its card shows; showing, it closes.
-const pressComponent = async ($: EngineInterface, id: string) => {
-  const open = await read($, mapOpenAtom)
-  const selected = await read($, mapSelAtom)
-  if (!open.includes(id)) {
-    await saveOpen($, [...open, id])
-    await update($, mapSelAtom, () => id)
-  } else if (selected !== id) {
-    await update($, mapSelAtom, () => id)
-  } else {
-    await saveOpen($, open.filter(x => x !== id))
-    await update($, mapSelAtom, () => null)
-  }
-}
-
-const changeText = (change: MapChange, graph: ArchGraph | null) => {
-  const name = (id: string) => graph?.nodes.find(n => n.id === id)?.label ?? id
-  return [
-    change.added.length ? `${change.added.length} new (${change.added.map(name).join(', ')})` : '',
-    change.changed.length ? `${change.changed.length} updated` : '',
-    change.removed.length ? `${change.removed.length} removed (${change.removed.join(', ')})` : '',
-    change.links ? `${change.links} link${change.links === 1 ? '' : 's'} changed` : '',
-  ]
-    .filter(Boolean)
-    .join(', ')
-}
-
-// The selected component, as the notepad's drawer has it: what it is, what
-// is happening in it, its connections and its parts.
-const componentCard = (n: ArchNode, graph: ArchGraph, facts: { isActive: boolean; edits?: RecentEdits[string]; tag: string; mark?: string; now: number }) => {
-  const name = (id: string) => graph.nodes.find(x => x.id === id)?.label ?? id
-  const calls = [...new Set(graph.edges.filter(e => e.from === n.id).map(e => name(e.to)))]
-  const callers = [...new Set(graph.edges.filter(e => e.to === n.id).map(e => name(e.from)))]
-  const parts = n.breakdown?.parts ?? []
-  const status = [
-    facts.isActive ? 'Claude is working here now' : '',
-    facts.edits ? `edited ${facts.edits.edits} time${facts.edits.edits === 1 ? '' : 's'}, last at ${timeLabel(facts.edits.at)}` : '',
-    facts.tag === 'NEW' ? 'new in the latest map update' : facts.tag ? 'changed in the latest map update' : '',
-  ].filter(Boolean)
-  const described = Object.keys(n.files ?? {}).length
-  return [
-    `**${n.label}** · ${n.kind}${n.sublabel ? ` · ${n.sublabel}` : ''}`,
-    n.path ? `\`${n.path}${n.line ? `:${n.line}` : ''}\`` : '',
-    status.length ? `_${status.join(' · ')}_` : '',
-    facts.mark ? `◯ Mark: ${facts.mark}` : '',
-    calls.length ? `Calls ${calls.join(', ')}` : '',
-    callers.length ? `Called by ${callers.join(', ')}` : '',
-    facts.edits
-      ? `**Changed lately**\n${Object.entries(facts.edits.files)
-          .sort((a, b) => b[1] - a[1])
-          .slice(0, 6)
-          .map(([path, count]) => `- \`${path}\` · ${count} edit${count === 1 ? '' : 's'}`)
-          .join('\n')}`
-      : '',
-    parts.length
-      ? `**Parts**\n${parts.map((p, i) => `${i + 1}. **${p.label}**${p.summary ? ` · ${p.summary}` : ''}`).join('\n')}`
-      : '_Not broken down yet: Break down asks Claude for its parts._',
-    described ? `${described} file${described === 1 ? '' : 's'} described (the notepad's drawer lists them)` : '',
-  ]
-    .filter(Boolean)
-    .join('\n\n')
-}
-
-// The pane refuses a Markdown block over 10,000 characters (and then draws
-// nothing), so a long one is cut at a line, with the rest in the notepad.
-const MARKDOWN_MAX = 9000
-const fitText = (text: string, keep: 'start' | 'end' = 'start') => {
-  if (text.length <= MARKDOWN_MAX) return text
-  const note = '_…cut here to fit the pane: the rest is in the notepad (Open notepad ↗)._'
-  if (keep === 'end') {
-    const tail = text.slice(-MARKDOWN_MAX)
-    return `${note}\n\n${tail.slice(Math.min(Math.max(tail.indexOf('\n\n'), 0), MARKDOWN_MAX / 2)).trimStart()}`
-  }
-  const cut = text.slice(0, MARKDOWN_MAX)
-  return `${cut.slice(0, Math.max(cut.lastIndexOf('\n'), MARKDOWN_MAX / 2))}\n\n${note}`
-}
-
-// Saves a changed node into the map file and the pane.
-const saveNode = async ($: EngineInterface, graph: ArchGraph, id: string, change: (n: ArchNode) => ArchNode) => {
-  const next: ArchGraph = plain({ ...graph, nodes: graph.nodes.map(n => (n.id === id ? change(n) : n)) })
-  await setGraph($, next)
-  await $.fs.write(inRoot(await currentRoot($), GRAPH_FILE), `${JSON.stringify(next, null, 2)}\n`)
-  await publishLive($).catch(() => undefined)
-}
-
-export const register: Register = on => {
+const sessionHooks = (on: Parameters<Register>[0]) => {
   on('session.end', async ($, e, next) => {
     const now = await $.clock.now()
     await changeSession($, s => ({ ...s, endedAt: now })).catch(() => undefined)
@@ -1417,148 +1362,21 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const started = await next(e)
 
-    await $.tool.register({
-      name: 'arch_update',
-      description: `Add, update or remove components and connections in the live architecture diagram (saved to ${GRAPH_FILE} in the project). Nodes merge by id, edges by from+to. Read that file for the current state.`,
-      inputSchema: UPDATE_SCHEMA,
-    })
-    await $.tool.register({
-      name: 'arch_theme',
-      description: "Save the person's diagram style: a palette of semantic color roles and three font families. Returns contrast warnings to fix.",
-      inputSchema: THEME_SCHEMA,
-    })
-    await $.command.register({ name: 'arch', description: 'Show the live architecture diagram' })
-    await $.command.register({ name: 'arch-map', description: "Ask Claude to map a project's architecture", argumentHint: '[folder]' })
-    await $.command.register({ name: 'arch-theme', description: 'Set your diagram style from a website', argumentHint: '[url | default]' })
-    await $.command.register({ name: 'arch-export', description: `Write the diagram to ${EXPORT_FILE}` })
-    await $.command.register({ name: 'notepad', description: 'Open the live notepad in your browser', immediate: true })
-    await $.command.register({ name: 'standup', description: 'Your standup brief since the last one, copied to the clipboard', immediate: true })
-    await $.command.register({ name: 'n', description: 'Jot a note in today’s journal', argumentHint: '[@component] text', immediate: true })
-    await $.command.register({ name: 'todo', description: 'Add a todo to the journal', argumentHint: '[@component] text', immediate: true })
-    await $.command.register({ name: 'blocker', description: 'Log a blocker', argumentHint: '[@component] text', immediate: true })
-    await $.command.register({ name: 'decision', description: 'Log a decision ("… because …")', argumentHint: '[@component] text', immediate: true })
-    await $.command.register({ name: 'done', description: 'Close a todo or blocker', argumentHint: 'words from it', immediate: true })
-    await $.tool.register({
-      name: 'describe_files',
-      description: "Save one-line summaries of a component's files for the person's notepad (shown in its file view).",
-      inputSchema: {
-        type: 'object',
-        properties: {
-          component: { type: 'string', description: 'The architecture node id.' },
-          files: {
-            type: 'array',
-            items: {
-              type: 'object',
-              properties: {
-                path: { type: 'string', description: 'Project-relative file path.' },
-                summary: { type: 'string', description: 'One plain sentence, under 15 words.' },
-              },
-              required: ['path', 'summary'],
-            },
-          },
-        },
-        required: ['component', 'files'],
-      },
-    })
-    await $.tool.register({
-      name: 'arch_breakdown',
-      description: "Save a component's internal parts and how they connect, for the notepad's zoomed-in diagram. Replaces that component's breakdown.",
-      inputSchema: {
-        type: 'object',
-        properties: {
-          component: { type: 'string', description: 'The architecture node id.' },
-          parts: {
-            type: 'array',
-            items: {
-              type: 'object',
-              properties: {
-                id: { type: 'string' },
-                label: { type: 'string' },
-                role: { type: 'string', enum: PART_ROLES },
-                path: { type: 'string', description: 'Project-relative file or folder.' },
-                line: { type: 'number' },
-                summary: { type: 'string', description: 'One plain sentence on its purpose.' },
-              },
-              required: ['id', 'label'],
-            },
-          },
-          edges: {
-            type: 'array',
-            items: {
-              type: 'object',
-              properties: { from: { type: 'string' }, to: { type: 'string', description: 'A part id, or another component id.' }, label: { type: 'string' } },
-              required: ['from', 'to'],
-            },
-          },
-        },
-        required: ['component', 'parts'],
-      },
-    })
-    await $.tool.register({
-      name: 'explain_part',
-      description: "Save an in-depth explanation (Markdown) of one part of a component, shown in the notepad when the person opens that part.",
-      inputSchema: {
-        type: 'object',
-        properties: { component: { type: 'string' }, part: { type: 'string' }, detail: { type: 'string', description: 'Markdown, under 200 words.' } },
-        required: ['component', 'part', 'detail'],
-      },
-    })
-    await $.tool.register({
-      name: 'save_standup',
-      description: "Save the standup notes you wrote for the person; they show on the notepad's Standup tab, ready to copy.",
-      inputSchema: {
-        type: 'object',
-        properties: {
-          markdown: { type: 'string', description: 'The standup notes, in Markdown.' },
-          scope: { type: 'string', description: 'What it covers, e.g. "all sessions".' },
-        },
-        required: ['markdown'],
-      },
-    })
-    await $.tool.register({
-      name: 'log_decision',
-      description: 'Record a design decision in the person’s work journal: what was decided, why, and what else was considered.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          decision: { type: 'string' },
-          why: { type: 'string' },
-          alternatives: { type: 'string', description: 'What else was considered, briefly.' },
-          component: LOG_SCHEMA_COMPONENT,
-        },
-        required: ['decision', 'why'],
-      },
-    })
-    await $.tool.register({
-      name: 'log_blocker',
-      description: 'Record something that blocks progress in the person’s work journal, or mark one resolved.',
-      inputSchema: {
-        type: 'object',
-        properties: { text: { type: 'string' }, resolved: { type: 'boolean' }, component: LOG_SCHEMA_COMPONENT },
-        required: ['text'],
-      },
-    })
-    await $.tool.register({
-      name: 'log_todo',
-      description: 'Add a remaining work item to the person’s work journal, or mark one done.',
-      inputSchema: {
-        type: 'object',
-        properties: { text: { type: 'string' }, done: { type: 'boolean' }, component: LOG_SCHEMA_COMPONENT },
-        required: ['text'],
-      },
-    })
+    await registerTools($)
+    await registerCommands($)
 
     const themeText = await $.fs.read(await homeThemePath($)).catch(() => undefined)
     const theme = themeText ? plain(normalizeTheme(parseJson(themeText))) : null
     // A project the session settled on (by working in it, or arch_update's
     // root) survives a reload or resume; only a guess is made again.
     const stored = (await read($, rootAtom)) && !(await read($, rootGuessAtom)) ? await currentRoot($) : ''
-    const kept = stored && (await $.fs.exists(stored).catch(() => false)) ? stored : ''
+    const kept = stored && (await $.fs.exists(stored).catch(() => false)) ? await rootOf($, stored) : ''
     const root = kept || (await findRoot($))
     const graph = await loadGraph($, root).catch(() => null)
     await update($, themeAtom, () => theme)
     await update($, rootAtom, () => root)
-    if (!kept) await update($, rootGuessAtom, () => root !== e.cwd)
+    const isGuessNow = !kept && (await isGuessFor($, root))
+    if (!kept) await update($, rootGuessAtom, () => isGuessNow)
     if (root === stored) await update($, graphAtom, () => graph)
     else await switchGraph($, graph)
 
@@ -1601,257 +1419,19 @@ export const register: Register = on => {
     const composed = await next(e)
     return { sections: [...composed.sections, SECTION] }
   })
+}
 
-  on('tool.call', { tool: UPDATE_TOOL }, async ($, e) => {
-    const args = e as unknown as UpdateArgs
-    await update($, mapAskedAtom, () => null)
-    if (args.root !== undefined) {
-      const root = await absRoot($, cleanRoot(args.root))
-      await update($, rootGuessAtom, () => false)
-      if (root !== (await currentRoot($))) {
-        await update($, rootAtom, () => root)
-        const existing = await loadGraph($, root).catch(() => null)
-        await switchGraph($, existing)
-      }
-    }
-    const root = await currentRoot($)
-    const before = await read($, graphAtom)
-    const { graph, problems } = applyUpdate(before, args, await $.clock.now())
-    if (turn) {
-      const had = new Set((before?.nodes ?? []).map(n => n.id))
-      const has = new Set(graph.nodes.map(n => n.id))
-      turn.added.push(...graph.nodes.filter(n => !had.has(n.id)).map(n => n.label))
-      turn.removed.push(...(before?.nodes ?? []).filter(n => !has.has(n.id)).map(n => n.label))
-    }
-    void saveSnapshot($, graph, before).catch(() => undefined)
-    await setGraph($, graph)
-    await update($, askAtom, ask => (ask === 'map' ? null : ask))
-    await $.fs.write(inRoot(root, GRAPH_FILE), `${JSON.stringify(graph, null, 2)}\n`)
-    await writePopout($, graph, await currentTheme($))
-    await publishLive($).catch(() => undefined)
-    void openPane($)
-    const summary = `Diagram now has ${graph.nodes.length} components and ${graph.edges.length} connections (saved to ${inRoot(root, GRAPH_FILE)}).`
-    return { result: problems.length ? `${summary}\nSkipped: ${problems.join('; ')}` : summary }
-  })
+/* ---------- The pane and the row above the prompt ---------- */
 
-  on('tool.call', { tool: THEME_TOOL }, async ($, e) => {
-    const given = e as unknown as { fonts?: unknown }
-    const theme = plain(normalizeTheme(given.fonts ? e : { ...e, fonts: (await read($, themeAtom))?.fonts ?? DEFAULT_THEME.fonts }))
-    await $.fs.write(await homeThemePath($), `${JSON.stringify(theme, null, 2)}\n`)
-    await update($, themeAtom, () => theme)
-    const graph = await read($, graphAtom)
-    await update($, askAtom, ask => (ask === 'theme' || ask === 'brand' ? null : ask))
-    await writePopout($, graph, theme)
-    await publishLive($).catch(() => undefined)
-    void openPane($)
-    const warnings = themeWarnings(theme)
-    const saved = `Saved "${theme.name}" to ${await homeThemePath($)}.`
-    return { result: warnings.length ? `${saved}\nFix and call again: ${warnings.join('; ')}` : saved }
-  })
+// The Architecture pane (Diagram, Journal, Timeline and Standup tabs) and the
+// row above the prompt that offers to map, style or carry the journal forward.
 
-  // Hand edits to the graph file (by Claude or by the person) redraw the pane.
-  on('tool.call', { tool: 'Write' }, async ($, e, next) => {
-    const file = typeof e.file_path === 'string' ? e.file_path : ''
-    const existed = file ? await $.fs.exists(file).catch(() => true) : true
-    const ran = await next(e)
-    if (!file) return ran
-    await reloadAfter($, file)
-    if (ran.deny === undefined && !ran.isError) await recordFile($, file, !existed)
-    return ran
-  })
-  on('tool.call', { tool: 'Edit' }, async ($, e, next) => {
-    const file = typeof e.file_path === 'string' ? e.file_path : ''
-    const ran = await next(e)
-    if (!file) return ran
-    await reloadAfter($, file)
-    if (ran.deny === undefined && !ran.isError) await recordFile($, file, false)
-    return ran
-  })
-  on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
-    const ran = await next(e)
-    if (turn) turn.commands += 1
-    return ran
-  })
+// How far back the Timeline tab reads the journal.
+const TIMELINE_DAYS = 180
 
-  // The journal: each main-thread turn becomes one entry when it completes.
-  on('prompt.submit', async ($, e, next) => {
-    boot($)
-    const pending = await read($, pendingAtom)
-    // A background task's notice arrives as a prompt too; it is not the person's request.
-    const isNotice = e.text.trim().startsWith('<task-notification>')
-    const isTyped = e.text.trim() !== '' && !e.text.trim().startsWith('/') && !isNotice
-    const result = await next(pending && isTyped ? { ...e, context: [...(e.context ?? []), pending] } : e)
-    if (pending && isTyped && result.drop === undefined) await update($, pendingAtom, () => null)
-    if (result.drop === undefined && (isTyped || isNotice)) {
-      if (isTyped) {
-        const first = distill(e.text, { mode: 'request', max: 1 }).statements[0]?.text ?? e.text
-        const name = first.replace(/\s+/g, ' ').trim().slice(0, 48)
-        await changeSession($, s => (s.isNamed || s.name ? s : { ...s, name })).catch(() => undefined)
-      }
-      // A notice's turn still counts its edits, under a plain request.
-      turn = {
-        ts: await $.clock.now(),
-        request: isNotice ? 'A background task finished.' : e.text,
-        files: new Map(),
-        components: new Set(),
-        commands: 0,
-        added: [],
-        removed: [],
-      }
-    }
-    return result
-  })
+const nameOfDate = (date: string, today: string) => (date === today ? 'Today' : dayLabel(Date.parse(`${date}T12:00:00`)))
 
-  on('turn.complete', async ($, e, next) => {
-    boot($)
-    const result = await next(e)
-    const done = turn
-    if (!e.agentId && done) {
-      turn = undefined
-      await followWork($, done).catch(() => undefined)
-      await changeSession($, s => s).catch(() => undefined)
-      await update($, activeAtom, () => [])
-      await publishLive($).catch(() => undefined)
-      const request = distill(done.request, { mode: 'request', max: 2 }).statements.map(s => s.text).join(' ')
-      const summary = distill(e.answer, { mode: 'log', max: 3 }).statements.map(s => s.text)
-      const isWorth = done.files.size > 0 || done.added.length > 0 || done.removed.length > 0 || summary.length > 0
-      if (isWorth) {
-        await appendEntry($, {
-          id: newId(done.ts),
-          ts: done.ts,
-          type: 'turn',
-          request: request || done.request.slice(0, 160),
-          summary,
-          files: [...done.files.values()],
-          components: [...done.components],
-          commands: done.commands,
-          ...(done.added.length || done.removed.length ? { arch: { added: done.added, removed: done.removed } } : {}),
-        }).catch(() => undefined)
-      }
-    }
-    return result
-  })
-
-  on('tool.call', { tool: DESCRIBE_TOOL }, async ($, e) => {
-    const args = e as unknown as { component?: string; files?: { path?: string; summary?: string }[] }
-    const graph = await read($, graphAtom)
-    const node = graph?.nodes.find(n => n.id === args.component)
-    if (!graph || !node) return { result: `No component "${args.component}" on the map. Use an id from ${GRAPH_FILE}.` }
-    const now = await $.clock.now()
-    const given = (args.files ?? []).filter(f => f.path && f.summary)
-    const files = { ...(node.files ?? {}) }
-    for (const f of given) files[cleanRoot(f.path)] = { summary: String(f.summary).trim().slice(0, 160), at: now }
-    const next: ArchGraph = plain({ ...graph, nodes: graph.nodes.map(n => (n.id === node.id ? { ...n, files } : n)) })
-    await setGraph($, next)
-    await $.fs.write(inRoot(await currentRoot($), GRAPH_FILE), `${JSON.stringify(next, null, 2)}\n`)
-    return { result: `Saved ${given.length} file summar${given.length === 1 ? 'y' : 'ies'} for ${node.label}.` }
-  })
-
-  on('tool.call', { tool: BREAKDOWN_TOOL }, async ($, e) => {
-    const args = e as unknown as { component?: string; parts?: Partial<ArchPart>[]; edges?: { from?: string; to?: string; label?: string }[] }
-    const graph = await read($, graphAtom)
-    const node = graph?.nodes.find(n => n.id === args.component)
-    if (!graph || !node) return { result: `No component "${args.component}" on the map. Use an id from ${GRAPH_FILE}.` }
-    const before = new Map((node.breakdown?.parts ?? []).map(p => [p.id, p]))
-    const parts: ArchPart[] = (args.parts ?? [])
-      .filter(p => typeof p.id === 'string' && p.id.trim() && typeof p.label === 'string')
-      .slice(0, 14)
-      .map(p => {
-        const id = String(p.id).trim()
-        const was = before.get(id)
-        return {
-          id,
-          label: String(p.label).slice(0, 60),
-          ...(p.role && PART_ROLES.includes(p.role) ? { role: p.role } : {}),
-          ...(p.path ? { path: cleanRoot(p.path) } : {}),
-          ...(typeof p.line === 'number' ? { line: p.line } : {}),
-          ...(p.summary ? { summary: String(p.summary).slice(0, 200) } : {}),
-          // An explanation stays with a part that keeps its id.
-          ...(was?.detail ? { detail: was.detail, detailAt: was.detailAt } : {}),
-        }
-      })
-    const ids = new Set([...parts.map(p => p.id), ...graph.nodes.map(n => n.id)])
-    const edges = (args.edges ?? [])
-      .filter(x => x.from && x.to && ids.has(x.from) && ids.has(x.to))
-      .map(x => ({ from: String(x.from), to: String(x.to), ...(x.label ? { label: String(x.label).slice(0, 40) } : {}) }))
-    const now = await $.clock.now()
-    await saveNode($, graph, node.id, n => ({ ...n, breakdown: { parts, edges, at: now } }))
-    return { result: `Saved ${parts.length} parts and ${edges.length} connections for ${node.label}; the notepad shows them when the component is opened.` }
-  })
-
-  on('tool.call', { tool: EXPLAIN_TOOL }, async ($, e) => {
-    const args = e as unknown as { component?: string; part?: string; detail?: string }
-    const graph = await read($, graphAtom)
-    const node = graph?.nodes.find(n => n.id === args.component)
-    const part = node?.breakdown?.parts.find(p => p.id === args.part)
-    if (!graph || !node || !part) return { result: `No part "${args.part}" in ${args.component}'s breakdown.` }
-    const detail = String(args.detail ?? '').trim().slice(0, 6000)
-    if (!detail) return { result: 'Nothing to save: pass the explanation as detail.' }
-    const now = await $.clock.now()
-    await saveNode($, graph, node.id, n => ({
-      ...n,
-      breakdown: n.breakdown ? { ...n.breakdown, parts: n.breakdown.parts.map(p => (p.id === part.id ? { ...p, detail, detailAt: now } : p)) } : n.breakdown,
-    }))
-    return { result: `Saved. It shows when ${part.label} is opened in the notepad.` }
-  })
-
-  on('tool.call', { tool: STANDUP_TOOL }, async ($, e) => {
-    const args = e as unknown as { markdown?: string; scope?: string }
-    const markdown = String(args.markdown ?? '').trim()
-    if (!markdown) return { result: 'Nothing to save: pass the standup as markdown.' }
-    const now = await $.clock.now()
-    const saved: StandupDraft = { markdown: markdown.slice(0, 20_000), scope: String(args.scope ?? 'all sessions').slice(0, 120), at: now }
-    const kept = (parseJson(await $.fs.read(await draftsFile($)).catch(() => '')) as { drafts?: StandupDraft[] } | undefined)?.drafts ?? []
-    await $.fs.write(await draftsFile($), `${JSON.stringify(plain({ drafts: [...kept, saved].slice(-20) }), null, 2)}\n`)
-    await refreshJournal($).catch(() => undefined)
-    return { result: "Saved. It is on the notepad's Standup tab and in the pane's Standup tab." }
-  })
-
-  on('tool.call', { tool: DECISION_TOOL }, async ($, e) => {
-    const args = e as unknown as { decision?: string; why?: string; alternatives?: string; component?: string }
-    if (!args.decision) return { result: 'decision is required.' }
-    await addNote($, 'decision', args.decision, 'claude', {
-      why: args.why,
-      alternatives: args.alternatives,
-      component: args.component,
-    })
-    return { result: 'Logged the decision in the journal.' }
-  })
-
-  on('tool.call', { tool: BLOCKER_TOOL }, async ($, e) => {
-    const args = e as unknown as { text?: string; resolved?: boolean; component?: string }
-    if (!args.text) return { result: 'text is required.' }
-    if (args.resolved) {
-      const hit = await closeItem($, ['blocker'], args.text, 'claude')
-      return { result: hit ? `Marked resolved: ${hit.text}` : 'No open blocker matched; nothing changed.' }
-    }
-    await addNote($, 'blocker', args.text, 'claude', { component: args.component })
-    return { result: 'Logged the blocker in the journal.' }
-  })
-
-  on('tool.call', { tool: TODO_TOOL }, async ($, e) => {
-    const args = e as unknown as { text?: string; done?: boolean; component?: string }
-    if (!args.text) return { result: 'text is required.' }
-    if (args.done) {
-      const hit = await closeItem($, ['todo'], args.text, 'claude')
-      return { result: hit ? `Marked done: ${hit.text}` : 'No open todo matched; nothing changed.' }
-    }
-    await addNote($, 'todo', args.text, 'claude', { component: args.component })
-    return { result: 'Added the todo to the journal.' }
-  })
-
-  // One hook answers every command of this mod, so a failure comes back as
-  // text instead of the run going unanswered.
-  on('command.run', async ($, e, next) => {
-    const name = e.command.replace(/^arch-live:/, '')
-    if (!COMMANDS.includes(name)) return next(e)
-    try {
-      return { text: await runCommand($, name, e.args ?? '') }
-    } catch (err) {
-      return { text: `arch-live: /${name} failed: ${errorText(err)}` }
-    }
-  })
-
+const paneHooks = (on: Parameters<Register>[0]) => {
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     boot($)
     const graph = await read($, graphAtom)
@@ -1876,6 +1456,9 @@ export const register: Register = on => {
     }
 
     const { Box, Svg, Text, Button, Markdown } = $.ui.resolve(e)
+    // Sized to the pane: the layout is chosen to fill its width, and the
+    // drawing is given that width (and its own height) so nothing letterboxes.
+    const room = Math.max(280, e.props.bodyColumns * CELL_PX - 16)
     const tabs = (
       <Box flexDirection="row" gap={1} flexWrap="wrap">
         {TABS.map(([id, label]) => (
@@ -1933,6 +1516,75 @@ export const register: Register = on => {
       )
     }
 
+    if (tab === 'timeline') {
+      const now = await $.clock.now()
+      const steps = mapTimeline(await loadDays($, dateKey(now - TIMELINE_DAYS * DAY_MS)))
+      if (steps.length === 0) {
+        return (
+          <Box flexDirection="column" gap={1}>
+            {tabs}
+            <Markdown text={timelineMarkdown([])} />
+          </Box>
+        )
+      }
+      const chosen = await read($, tlStepAtom)
+      const step = steps.find(s => stepKey(s) === chosen) ?? steps[steps.length - 1]!
+      const newest = [...steps].reverse()
+      const recent = newest.slice(0, 6)
+      const older = newest.slice(6)
+      const short = (s: (typeof steps)[number]) => `${nameOfDate(s.date, dateKey(now))}${s.kind === 'between' ? ' (outside)' : ''}`
+      const drawing = renderSvg(snapshotGraph(step.after, graph?.title), theme, room, {
+        fresh: { added: step.added.map(n => n.id), changed: step.renamed.map(r => r.id) },
+      })
+      const width = Math.round(Math.min(room, drawing.width * 1.5))
+      const height = Math.round((width * drawing.height) / drawing.width)
+      const text = stepMarkdown(step, await sessionNames($))
+      let olderPicker = null
+      if (older.length > 0 && e.surface !== 'mobile') {
+        const { Select } = $.ui.resolve(e)
+        olderPicker = (
+          <Select
+            key="tl-older"
+            label="Older"
+            options={older.map(s => ({ value: stepKey(s), label: short(s) }))}
+            value={older.some(s => s === step) ? stepKey(step) : undefined}
+            onSelect={key => update($, tlStepAtom, () => key)}
+          />
+        )
+      }
+      return (
+        <Box flexDirection="column" gap={1}>
+          {tabs}
+          <Text key="tl-intro" dimColor>{`How the map changed: ${steps.length} step${steps.length === 1 ? '' : 's'} in the last ${TIMELINE_DAYS} days. The drawing shows the map after the step you choose.`}</Text>
+          <Box flexDirection="row" gap={1} flexWrap="wrap">
+            {recent.map(s => (
+              <Button
+                key={`tl-${stepKey(s)}`}
+                label={short(s)}
+                variant={s === step ? 'primary' : 'secondary'}
+                onPress={() => update($, tlStepAtom, () => stepKey(s))}
+              />
+            ))}
+          </Box>
+          {olderPicker}
+          <Svg source={drawing.svg} alt={`The map after ${stepTitle(step)}. ${drawing.alt}`} width={width} height={height} />
+          <Markdown text={fitText(text)} />
+          <Box flexDirection="row" gap={1} flexWrap="wrap">
+            <Button
+              key="tl-copy"
+              label="Copy this step"
+              onPress={async () => $.ui.toast((await copyText($, text)) ? 'Step copied' : 'arch-live: could not copy')}
+            />
+            <Button
+              key="tl-copy-all"
+              label="Copy the timeline"
+              onPress={async () => $.ui.toast((await copyText($, timelineMarkdown(steps))) ? 'Timeline copied' : 'arch-live: could not copy')}
+            />
+          </Box>
+        </Box>
+      )
+    }
+
     if (tab === 'journal') {
       const now = await $.clock.now()
       const today = dateKey(now)
@@ -1941,7 +1593,7 @@ export const register: Register = on => {
       const open = await read($, openAtom)
       const noteType = await read($, noteTypeAtom)
       const labels = labelsFrom(jday ? [jday] : [], graph)
-      const nameOf = (date: string) => (date === today ? 'Today' : dayLabel(Date.parse(`${date}T12:00:00`)))
+      const nameOf = (date: string) => nameOfDate(date, today)
       const recent = dates.slice(0, 5)
       const older = dates.slice(5)
       let composer = <Text dimColor>Use /n, /todo, /blocker or /decision to add notes here.</Text>
@@ -2019,9 +1671,6 @@ export const register: Register = on => {
       )
     }
 
-    // Sized to the pane: the layout is chosen to fill its width, and the
-    // drawing is given that width (and its own height) so nothing letterboxes.
-    const room = Math.max(280, e.props.bodyColumns * CELL_PX - 16)
     // Redrawn each minute as well as on every change, so what fades with time does.
     await read($, paneClockAtom)
     const now = await $.clock.now()
@@ -2032,7 +1681,7 @@ export const register: Register = on => {
     const selected = nodes.find(n => n.id === selectedId)
     const change = await read($, mapChangeAtom)
     const fresh = change && now - change.at < FRESH_MS ? change : null
-    const recent = recentEdits(graph, days, now)
+    const recent = recentEdits(graph, days, now, live.turn ? { ts: live.turn.ts, files: live.turn.files.values() } : undefined)
     const marks = marksOf(days)
     const overlay: Overlay = { marks, active, open, selected: selected?.id, fresh: fresh ?? undefined, recent, now }
     const drawing = renderSvg(graph, theme, room, overlay)
@@ -2231,4 +1880,12 @@ export const register: Register = on => {
       </Box>
     )
   })
+}
+
+export const register: Register = on => {
+  sessionHooks(on)
+  toolHooks(on)
+  turnHooks(on)
+  commandHooks(on)
+  paneHooks(on)
 }

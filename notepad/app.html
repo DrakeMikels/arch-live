@@ -13,6 +13,8 @@
 <link rel="stylesheet" href="/app/css/board.css">
 <link rel="stylesheet" href="/app/css/dialogs.css">
 <link rel="stylesheet" href="/app/css/standup.css">
+<link rel="stylesheet" href="/app/css/timeline.css">
+<link rel="stylesheet" href="/app/css/insights.css">
 <link rel="stylesheet" href="/app/css/controls.css">
 <!-- After the defaults, so the saved theme wins. -->
 <style id="theme"></style>
@@ -30,6 +32,8 @@
       <button role="tab" data-tab="diagram" aria-selected="false">Diagram <kbd>2</kbd></button>
       <button role="tab" data-tab="board" aria-selected="false">Board <kbd>3</kbd></button>
       <button role="tab" data-tab="standup" aria-selected="false">Standup <kbd>4</kbd></button>
+      <button role="tab" data-tab="timeline" aria-selected="false">Timeline <kbd>5</kbd></button>
+      <button role="tab" data-tab="insights" aria-selected="false">Insights <kbd>6</kbd></button>
     </div>
     <button class="mode" id="mode" title="Light, dark, or follow the system">◐ Auto</button>
     <button class="mode icon-btn" id="helpBtn" title="Help and shortcuts (?)" aria-label="Help">?</button>
@@ -66,11 +70,12 @@
     <section class="view" data-view="diagram">
       <div class="diagram">
         <div class="maptools">
-          <span class="hint">Click a component to open it in place · click a numbered part for its purpose · double-click a part for its code · <kbd>⌥</kbd>-click to mark</span>
+          <span class="hint">Click a component to open it in place · click a numbered part for its purpose · double-click a part for its code · <kbd>⌥</kbd>-click to mark · <kbd>⇧</kbd>-click two, or <b>Path to…</b> in a component's panel, for the path between them</span>
           <span class="spacer"></span>
           <button class="btn" id="mapExpand">Expand all</button>
           <button class="btn" id="mapCollapse">Collapse all</button>
           <button class="btn" id="mapFit">Fit</button>
+          <button class="btn" id="mapReset" title="Clear any path, close the drawer and fit the whole map (0)">Reset view</button>
           <select id="mapMode" aria-label="Layout" title="How the map is laid out">
             <option value="lr">Left → right</option>
             <option value="td">Top ↓ down</option>
@@ -78,6 +83,12 @@
             <option value="custom">Custom (your arrangement)</option>
           </select>
           <button class="btn" id="mapLock" title="Unlock to drag components into your own arrangement"></button>
+          <select id="mapOverlay" aria-label="Overlay" title="Tint the components by what the journal knows">
+            <option value="none">No overlay</option>
+            <option value="activity">Recent activity</option>
+            <option value="uncommitted">Not committed</option>
+            <option value="tests">Tests</option>
+          </select>
           <span class="exportwrap"><button class="btn warn" id="driftBtn" hidden aria-haspopup="menu"></button><div class="menu drift" id="driftMenu" role="menu" hidden></div></span>
           <span class="exportwrap"><button class="btn" id="mapExport" aria-haspopup="menu">Export ▾</button>
             <div class="menu" id="exportMenu" role="menu" hidden>
@@ -89,7 +100,7 @@
             </div></span>
           <span class="zoomctl"><button id="mapOut" title="Zoom out">−</button><span id="mapZoom" class="hint">100%</span><button id="mapIn" title="Zoom in">+</button></span>
         </div>
-        <div class="mapwrap"><svg id="map" xmlns="http://www.w3.org/2000/svg"><g id="mapvp"></g></svg></div>
+        <div class="mapwrap"><svg id="map" xmlns="http://www.w3.org/2000/svg"><g id="mapvp"></g></svg><div class="maplegend hint" id="mapLegend" aria-live="polite"></div><div class="mapfocus" id="mapFocusBar" aria-live="polite" hidden></div></div>
       </div>
       <div class="gutter" data-pane="drawer"><button data-collapse="drawer" title="Close (Esc)">›</button></div>
       <aside class="drawer" id="drawer"></aside>
@@ -138,6 +149,14 @@
         <div id="standupHistory" hidden></div>
       </div>
     </section>
+
+    <section class="view" data-view="insights"><div class="insights" id="insights"></div></section>
+    <section class="view" data-view="timeline">
+      <div class="timeline">
+        <div class="tl-list" id="tlList"></div>
+        <div class="tl-detail" id="tlDetail"></div>
+      </div>
+    </section>
   </main>
 </div>
 <div class="modal" id="settingsModal" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
@@ -165,6 +184,13 @@
     <div class="row"><span class="hint"><kbd>⌘↵</kbd> send</span><button class="btn" id="sendCancel">Cancel</button><button class="btn accent" id="sendGo">Send</button></div>
   </div>
 </div>
+<div class="modal" id="paletteModal" role="dialog" aria-modal="true" aria-label="Go to or run">
+  <div class="card palette">
+    <input id="paletteInput" autocomplete="off" spellcheck="false" placeholder="Go to a component, day, standup or file, or run an action…" role="combobox" aria-controls="paletteList" aria-expanded="true">
+    <div id="paletteList" role="listbox"></div>
+    <div class="hint pkeys"><kbd>↑</kbd><kbd>↓</kbd> choose · <kbd>↵</kbd> go · <kbd>Esc</kbd> close</div>
+  </div>
+</div>
 <div class="toast" id="toast"></div>
 <script src="/app/js/core.js"></script>
 <script src="/app/js/journal.js"></script>
@@ -174,7 +200,11 @@
 <script src="/app/js/map-export.js"></script>
 <script src="/app/js/drawer.js"></script>
 <script src="/app/js/board.js"></script>
+<script src="/app/js/timeline.js"></script>
 <script src="/app/js/settings.js"></script>
+<script src="/app/js/insights.js"></script>
+<script src="/app/js/palette.js"></script>
 <script src="/app/js/main.js"></script>
+<script type="module">import { routeLinks } from '/app/js/map-route.js'; window.routeLinks = routeLinks; window.dispatchEvent(new Event('arch-live:routes'))</script>
 </body>
 </html>

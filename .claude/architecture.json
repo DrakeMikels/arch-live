@@ -7,7 +7,17 @@
       "label": "Claude Code",
       "kind": "external",
       "order": 0,
-      "sublabel": "hooks · tools · prompts"
+      "sublabel": "hooks · tools · prompts",
+      "path": "hooks/hooks.json",
+      "owns": [
+        ".claude-plugin"
+      ],
+      "files": {
+        ".claude-plugin/plugin.json": {
+          "summary": "The plugin manifest Claude Code loads: name, version, author.",
+          "at": 1791129992321
+        }
+      }
     },
     {
       "id": "pane",
@@ -16,147 +26,715 @@
       "order": 1,
       "sublabel": "Pane · band · /commands",
       "path": "hooks/register.tsx",
-      "line": 1172
+      "line": 1398
     },
     {
       "id": "browser",
       "label": "Browser notepad",
       "kind": "client",
       "order": 2,
-      "sublabel": "Journal · Diagram · Board · Standup",
-      "path": "notepad/app.html",
-      "line": 247,
-      "owns": [
-        "notepad/app.html"
-      ],
       "files": {
         "notepad/app.html": {
-          "summary": "Single-file browser app: journal, component drawer, whiteboard, standup.",
-          "at": 1791041806432
+          "summary": "The notepad page's markup; loads its styles and scripts in order.",
+          "at": 1791129990654
+        },
+        "notepad/app/js/timeline.js": {
+          "summary": "Timeline: how the map changed, step by step, from journal snapshots.",
+          "at": 1791129990654
+        },
+        "notepad/app/css/timeline.css": {
+          "summary": "Styles for the Timeline tab and its diff map.",
+          "at": 1791129417478
+        },
+        "notepad/app/js/main.js": {
+          "summary": "Starts the page, switches tabs, routes clicks and keys, keeps the live link.",
+          "at": 1791129990654
+        },
+        "notepad/app/js/core.js": {
+          "summary": "Shared helpers, panes, sessions, light and dark mode, the notepad's dialogs.",
+          "at": 1791129990654
+        },
+        "notepad/app/js/journal.js": {
+          "summary": "Journal entries, sidebar, side panel, editing, search and the note box.",
+          "at": 1791129990654
+        },
+        "notepad/app/js/standup.js": {
+          "summary": "Standup tab: current write-up, drafts, history, copy and archive.",
+          "at": 1791129990654
+        },
+        "notepad/app/js/map-layout.js": {
+          "summary": "Map sizes, text wrapping and layouts: ELK, columns and your arrangement.",
+          "at": 1791129990654
+        },
+        "notepad/app/js/map.js": {
+          "summary": "Draws and animates the map; dragging, bending, zoom and the map check.",
+          "at": 1791129990654
+        },
+        "notepad/app/js/map-export.js": {
+          "summary": "Exports the map as SVG, PNG or a Mermaid flowchart.",
+          "at": 1791129990654
+        },
+        "notepad/app/js/drawer.js": {
+          "summary": "Component drawer: file tree, summaries, parts and marks.",
+          "at": 1791129990654
+        },
+        "notepad/app/js/board.js": {
+          "summary": "Whiteboard: tools, drawing, editing, undo, saving, sending to Claude.",
+          "at": 1791129990654
+        },
+        "notepad/app/js/settings.js": {
+          "summary": "Settings and help dialogs.",
+          "at": 1791129990654
+        },
+        "notepad/vendor/elk.bundled.js": {
+          "summary": "Bundled ELK layout engine (EPL-2.0) that places the map's boxes.",
+          "at": 1791129990654
         }
-      }
+      },
+      "sublabel": "Journal · Diagram · Board · Standup",
+      "path": "notepad/app/js/main.js",
+      "line": 82,
+      "owns": [
+        "notepad/app",
+        "notepad/app.html",
+        "notepad/vendor"
+      ]
     },
     {
       "id": "mod-hooks",
       "label": "Mod hooks",
       "kind": "service",
       "order": 3,
-      "sublabel": "register.tsx · tools · capture",
-      "path": "hooks/register.tsx",
-      "line": 877,
-      "owns": [
-        "hooks/register.tsx",
-        "types",
-        ".claude-plugin"
-      ],
       "files": {
         "hooks/register.tsx": {
-          "summary": "Every hook: map tools, journal capture, commands, pane and refresh.",
-          "at": 1791041802606
+          "summary": "Every hook: tools, pane, journal capture, notepad start and the inbox tick.",
+          "at": 1791129979265
         },
         "hooks/hooks.json": {
-          "summary": "Points Claude Code at the hooks module.",
-          "at": 1791041802606
+          "summary": "Tells Claude Code which module holds the hooks.",
+          "at": 1791129979265
         },
         "types/index.d.ts": {
-          "summary": "Shared types and the mod's $.state contract.",
-          "at": 1791041802606
+          "summary": "The mod's data contract: map, theme, journal and saved pane state.",
+          "at": 1791129979265
         },
         ".claude-plugin/plugin.json": {
           "summary": "Plugin manifest: name, version and type contract.",
           "at": 1791041802606
+        },
+        "hooks/graph.ts": {
+          "summary": "Map logic without engine calls: load, merge updates, diff versions, recent edits.",
+          "at": 1791129979265
+        },
+        "hooks/prompts.ts": {
+          "summary": "The prompts the mod sends Claude: map, breakdown, explain, describe, standup.",
+          "at": 1791129979265
+        },
+        "hooks/schemas.ts": {
+          "summary": "Names, descriptions and input schemas of the tools and commands registered.",
+          "at": 1791129979265
+        },
+        "hooks/constants.ts": {
+          "summary": "Names, file paths and limits the mod's parts share.",
+          "at": 1791129979265
+        },
+        "hooks/util.ts": {
+          "summary": "Small shared helpers: canonical JSON, plain copies and error text.",
+          "at": 1791129979265
+        },
+        "tests/graph.test.ts": {
+          "summary": "Tests map merging, diffs and recent-edit counts.",
+          "at": 1791129979265
+        },
+        "tests/tools.test.ts": {
+          "summary": "Tests the registered tools' schemas and names.",
+          "at": 1791129979265
+        },
+        "hooks/project-root.ts": {
+          "summary": "Resolves any folder to its project root: map, else git root, else itself.",
+          "at": 1792095761520
+        },
+        "tests/project-root.test.ts": {
+          "summary": "Tests project-root resolution from subfolders, git roots and home.",
+          "at": 1792095761520
+        },
+        "tests/journal-merge.test.ts": {
+          "summary": "Tests merging split journal days, notepad lines and sessions idempotently.",
+          "at": 1792095761520
         }
-      }
+      },
+      "sublabel": "register.tsx · tools · capture",
+      "path": "hooks/register.tsx",
+      "line": 1848,
+      "owns": [
+        "hooks/register.tsx",
+        "hooks/graph.ts",
+        "hooks/prompts.ts",
+        "hooks/schemas.ts",
+        "hooks/constants.ts",
+        "hooks/util.ts",
+        "types",
+        "tests"
+      ]
     },
     {
       "id": "renderer",
       "label": "Diagram renderer",
       "kind": "service",
       "order": 4,
-      "sublabel": "layout · SVG · themes",
-      "path": "hooks/render.ts",
-      "line": 400,
-      "owns": [
-        "hooks/render.ts",
-        "hooks/theme.ts"
-      ],
       "files": {
         "hooks/render.ts": {
-          "summary": "Lays out tiers and draws the SVG, marks and active dots.",
-          "at": 1791041803510
+          "summary": "Draws the map as SVG: tiers, routed lines, open parts and change markers.",
+          "at": 1791129981662
         },
         "hooks/theme.ts": {
-          "summary": "Default design tokens, theme normalising and contrast warnings.",
-          "at": 1791041803510
+          "summary": "Theme defaults, checks and color helpers for the drawing.",
+          "at": 1791129981662
+        },
+        "hooks/pane-text.ts": {
+          "summary": "Pane Markdown: component card, change lines, timeline steps, length cap.",
+          "at": 1791129981662
+        },
+        "tests/render.test.ts": {
+          "summary": "Tests the drawing's layout and markers.",
+          "at": 1791129981662
+        },
+        "tests/pane-text.test.ts": {
+          "summary": "Tests the pane's Markdown and its length cap.",
+          "at": 1791129981662
         }
-      }
+      },
+      "sublabel": "layout · SVG · pane text",
+      "path": "hooks/render.ts",
+      "line": 552,
+      "owns": [
+        "hooks/render.ts",
+        "hooks/theme.ts",
+        "hooks/pane-text.ts"
+      ]
     },
     {
       "id": "journal",
       "label": "Journal & STE",
       "kind": "service",
       "order": 5,
-      "sublabel": "turns · notes · standup",
-      "path": "hooks/journal.ts",
-      "line": 178,
-      "owns": [
-        "hooks/journal.ts",
-        "hooks/ste.ts"
-      ],
       "files": {
         "hooks/journal.ts": {
-          "summary": "Day files, done events, carry-forward and the standup brief.",
-          "at": 1791041804630
+          "summary": "Resolves day files and events, builds standups and maps files to components.",
+          "at": 1791129984278
         },
         "hooks/ste.ts": {
-          "summary": "Simplified Technical English distiller for turn summaries.",
-          "at": 1791041804630
+          "summary": "Shortens requests and answers into plain STE-style journal lines.",
+          "at": 1791129984278
+        },
+        "hooks/timeline.ts": {
+          "summary": "Builds the map's history from daily snapshots in the journal.",
+          "at": 1791129984278
+        },
+        "tests/journal.test.ts": {
+          "summary": "Tests day resolving, done and edit events and standups.",
+          "at": 1791129984278
+        },
+        "tests/timeline.test.ts": {
+          "summary": "Tests the map timeline's steps and counts.",
+          "at": 1791129984278
+        },
+        "tests/theme-ste.test.ts": {
+          "summary": "Tests theme checks and the STE distiller.",
+          "at": 1791129984278
+        },
+        "scripts/merge-journals.mjs": {
+          "summary": "One-time, repeatable fold of subfolder journals into their project root's journal.",
+          "at": 1792095762333
         }
-      }
+      },
+      "sublabel": "turns · timeline · standup",
+      "path": "hooks/journal.ts",
+      "line": 104,
+      "owns": [
+        "hooks/journal.ts",
+        "hooks/ste.ts",
+        "hooks/timeline.ts"
+      ]
     },
     {
       "id": "notepad-server",
       "label": "Notepad server",
       "kind": "service",
       "order": 6,
+      "files": {
+        "notepad/server.mjs": {
+          "summary": "Token-guarded local server: page, notepad API, live events, asks to Claude.",
+          "at": 1791129985376
+        },
+        "notepad/workspace.mjs": {
+          "summary": "Component file trees from git, symbol outlines, map check and boards.",
+          "at": 1791129985376
+        }
+      },
+      "breakdown": {
+        "parts": [
+          {
+            "id": "address-token",
+            "label": "Stable address and token",
+            "role": "config",
+            "path": "notepad/server.mjs",
+            "line": 51,
+            "summary": "Gives each project the same port and token every time, so open tabs survive restarts."
+          },
+          {
+            "id": "journal-reader",
+            "label": "Journal reader",
+            "role": "data",
+            "path": "notepad/server.mjs",
+            "line": 103,
+            "summary": "Loads recent day files and applies done, edit and remove events for every view."
+          },
+          {
+            "id": "map-timeline",
+            "label": "Map timeline",
+            "role": "logic",
+            "path": "notepad/server.mjs",
+            "line": 107,
+            "summary": "Builds how the map changed over 180 days from the journal's daily snapshots."
+          },
+          {
+            "id": "state-search",
+            "label": "Day state and search",
+            "role": "logic",
+            "path": "notepad/server.mjs",
+            "line": 203,
+            "summary": "Builds the page's day, sessions and open items, and searches every day and standup."
+          },
+          {
+            "id": "standup-archive",
+            "label": "Standup archive",
+            "role": "logic",
+            "path": "notepad/server.mjs",
+            "line": 364,
+            "summary": "Keeps standup drafts, archives a given standup and moves the next cutoff."
+          },
+          {
+            "id": "live-events",
+            "label": "Live events",
+            "role": "handler",
+            "path": "notepad/server.mjs",
+            "line": 450,
+            "summary": "Watches the journal and map folders and tells open pages to reload."
+          },
+          {
+            "id": "http-router",
+            "label": "HTTP router",
+            "role": "entry",
+            "path": "notepad/server.mjs",
+            "line": 487,
+            "summary": "Serves the page and its files, checks the token and routes every API call."
+          },
+          {
+            "id": "asks-inbox",
+            "label": "Asks to Claude",
+            "role": "integration",
+            "path": "notepad/server.mjs",
+            "line": 627,
+            "summary": "Turns describe, breakdown, standup and board requests into inbox lines for the session.",
+            "detail": "**What it does**\nIt takes a button press in the notepad that needs Claude and hands it to a Claude Code session. Examples: describe files, break down, explain a part, write the standup, re-map, match a style.\n\n**How it works**\n- The page posts `/api/ask` with a `kind` and its ids.\n- Each kind is checked: ids must be short slugs, and a brand URL must look like a site.\n- For `describe`, it first asks the workspace which files have no summary or a stale one. It sends at most 40.\n- `ask()` appends one JSON line to `inbox/<session>.jsonl` in the journal folder. The session is the page's `s`, else the one that started the server.\n- With no valid session, it prints `ASK {json}` to its owner session's output instead.\n- The mod's tick reads its inbox every 2 seconds, empties it, and turns each line into a prompt.\n\n**Depends on / called by**\nThe browser calls it. It uses the workspace reader and session names. Mod hooks pick the requests up.\n\n**Risky or surprising**\nThe press only queues work. Claude starts once the session is free, so nothing visible happens at first. A request for a closed session waits in its inbox until that session opens again.",
+            "detailAt": 1791082735467
+          },
+          {
+            "id": "workspace",
+            "label": "Workspace reader",
+            "role": "logic",
+            "path": "notepad/workspace.mjs",
+            "line": 90,
+            "summary": "Lists component files from git, outlines symbols, reads the map and checks drift."
+          },
+          {
+            "id": "boards-store",
+            "label": "Board store",
+            "role": "data",
+            "path": "notepad/workspace.mjs",
+            "line": 303,
+            "summary": "Saves and lists whiteboards and their pictures beside the journal."
+          }
+        ],
+        "edges": [
+          {
+            "from": "browser",
+            "to": "http-router",
+            "label": "REST"
+          },
+          {
+            "from": "live-events",
+            "to": "browser",
+            "label": "SSE"
+          },
+          {
+            "from": "http-router",
+            "to": "state-search"
+          },
+          {
+            "from": "http-router",
+            "to": "map-timeline"
+          },
+          {
+            "from": "http-router",
+            "to": "standup-archive"
+          },
+          {
+            "from": "http-router",
+            "to": "asks-inbox"
+          },
+          {
+            "from": "http-router",
+            "to": "workspace"
+          },
+          {
+            "from": "http-router",
+            "to": "boards-store"
+          },
+          {
+            "from": "state-search",
+            "to": "journal-reader"
+          },
+          {
+            "from": "map-timeline",
+            "to": "journal",
+            "label": "mapTimeline"
+          },
+          {
+            "from": "standup-archive",
+            "to": "journal-reader"
+          },
+          {
+            "from": "journal-reader",
+            "to": "journal-files",
+            "label": "read"
+          },
+          {
+            "from": "http-router",
+            "to": "journal-files",
+            "label": "append"
+          },
+          {
+            "from": "live-events",
+            "to": "journal-files",
+            "label": "watch"
+          },
+          {
+            "from": "workspace",
+            "to": "project-map",
+            "label": "read"
+          },
+          {
+            "from": "asks-inbox",
+            "to": "mod-hooks",
+            "label": "inbox"
+          },
+          {
+            "from": "http-router",
+            "to": "editor",
+            "label": "code -g"
+          },
+          {
+            "from": "address-token",
+            "to": "http-router"
+          }
+        ],
+        "at": 1791130119706
+      },
       "sublabel": "Node · 127.0.0.1 · SSE",
       "path": "notepad/server.mjs",
-      "line": 209,
+      "line": 487,
       "owns": [
         "notepad/server.mjs",
         "notepad/workspace.mjs"
-      ],
-      "files": {
-        "notepad/server.mjs": {
-          "summary": "Token-guarded local server: notepad API, live events, asks to Claude.",
-          "at": 1791041805735
-        },
-        "notepad/workspace.mjs": {
-          "summary": "Component file trees from git, symbol outlines and saved boards.",
-          "at": 1791041805735
-        }
-      }
+      ]
     },
     {
       "id": "project-map",
       "label": "Project map",
       "kind": "store",
       "order": 7,
-      "sublabel": ".claude/architecture.json"
+      "sublabel": ".claude/architecture.json",
+      "path": ".claude/architecture.json",
+      "owns": [
+        ".claude"
+      ],
+      "files": {
+        ".claude/architecture.json": {
+          "summary": "The live map: components, connections, file summaries and breakdowns.",
+          "at": 1791129991655
+        }
+      }
     },
     {
       "id": "journal-files",
       "label": "Journal files",
       "kind": "store",
       "order": 8,
-      "sublabel": "~/.claude/arch-live/logs"
+      "sublabel": "~/.claude/arch-live/logs",
+      "path": "hooks/register.tsx",
+      "line": 326,
+      "breakdown": {
+        "parts": [
+          {
+            "id": "day-files",
+            "label": "Day files",
+            "role": "data",
+            "path": "hooks/register.tsx",
+            "line": 326,
+            "summary": "Each day's turns and Claude's notes in <date>.json, written one change at a time by the mod."
+          },
+          {
+            "id": "web-events",
+            "label": "Notepad event log",
+            "role": "data",
+            "path": "notepad/server.mjs",
+            "line": 199,
+            "summary": "Notes, done, edit and remove events from the browser, appended to <date>.web.jsonl."
+          },
+          {
+            "id": "session-files",
+            "label": "Session files",
+            "role": "data",
+            "path": "hooks/register.tsx",
+            "line": 338,
+            "summary": "One small file per Claude Code session: its name, start, last activity and end."
+          },
+          {
+            "id": "standup-store",
+            "label": "Standup store",
+            "role": "data",
+            "path": "notepad/server.mjs",
+            "line": 353,
+            "summary": "The last cutoff, Claude's drafts and every archived standup with its brief."
+          },
+          {
+            "id": "inboxes",
+            "label": "Session inboxes",
+            "role": "integration",
+            "path": "notepad/server.mjs",
+            "line": 193,
+            "summary": "One line per notepad request, per session, read and emptied by that session's mod."
+          },
+          {
+            "id": "map-view-files",
+            "label": "Map view files",
+            "role": "data",
+            "path": "notepad/server.mjs",
+            "line": 608,
+            "summary": "Which components are open (map-view.json) and your own arrangement (map-layout.json)."
+          },
+          {
+            "id": "live-meta",
+            "label": "Live map snapshot",
+            "role": "data",
+            "path": "hooks/register.tsx",
+            "line": 393,
+            "summary": "meta.json and live.svg: the project's facts, marks and active components for the notepad."
+          },
+          {
+            "id": "boards",
+            "label": "Whiteboards",
+            "role": "data",
+            "path": "notepad/workspace.mjs",
+            "line": 209,
+            "summary": "Saved boards and the pictures sent to Claude, in the boards folder."
+          },
+          {
+            "id": "address-settings",
+            "label": "Address and settings",
+            "role": "config",
+            "path": "notepad/server.mjs",
+            "line": 274,
+            "summary": "notepad.json keeps the notepad's port and token; settings.json keeps retention and ignored folders."
+          }
+        ],
+        "edges": [
+          {
+            "from": "mod-hooks",
+            "to": "day-files",
+            "label": "write"
+          },
+          {
+            "from": "mod-hooks",
+            "to": "session-files",
+            "label": "write"
+          },
+          {
+            "from": "mod-hooks",
+            "to": "live-meta",
+            "label": "publish"
+          },
+          {
+            "from": "notepad-server",
+            "to": "web-events",
+            "label": "append"
+          },
+          {
+            "from": "notepad-server",
+            "to": "inboxes",
+            "label": "append"
+          },
+          {
+            "from": "inboxes",
+            "to": "mod-hooks",
+            "label": "tick reads"
+          },
+          {
+            "from": "notepad-server",
+            "to": "standup-store",
+            "label": "archive"
+          },
+          {
+            "from": "mod-hooks",
+            "to": "standup-store",
+            "label": "drafts"
+          },
+          {
+            "from": "notepad-server",
+            "to": "map-view-files",
+            "label": "write"
+          },
+          {
+            "from": "map-view-files",
+            "to": "mod-hooks",
+            "label": "open state"
+          },
+          {
+            "from": "notepad-server",
+            "to": "boards",
+            "label": "save"
+          },
+          {
+            "from": "day-files",
+            "to": "journal",
+            "label": "resolve days"
+          },
+          {
+            "from": "web-events",
+            "to": "journal",
+            "label": "resolve days"
+          },
+          {
+            "from": "live-meta",
+            "to": "notepad-server",
+            "label": "read"
+          },
+          {
+            "from": "address-settings",
+            "to": "notepad-server",
+            "label": "port · token"
+          }
+        ],
+        "at": 1791130327872
+      }
     },
     {
       "id": "editor",
       "label": "Cursor / VS Code",
       "kind": "external",
       "order": 9,
-      "sublabel": "code -g file:line"
+      "sublabel": "code -g file:line",
+      "path": "notepad/server.mjs",
+      "line": 437,
+      "breakdown": {
+        "parts": [
+          {
+            "id": "pane-jump",
+            "label": "Pane Jump to code",
+            "role": "ui",
+            "path": "hooks/register.tsx",
+            "line": 1705,
+            "summary": "The pane card's button that opens the selected component's entry file."
+          },
+          {
+            "id": "mod-opener",
+            "label": "Mod editor opener",
+            "role": "integration",
+            "path": "hooks/register.tsx",
+            "line": 265,
+            "summary": "Resolves a folder to its entry file, then tries code, cursor, then the default app."
+          },
+          {
+            "id": "drawer-open",
+            "label": "Drawer open links",
+            "role": "ui",
+            "path": "notepad/app/js/drawer.js",
+            "line": 137,
+            "summary": "File and symbol links in the notepad's drawer that ask the server to open code."
+          },
+          {
+            "id": "open-route",
+            "label": "Open route",
+            "role": "handler",
+            "path": "notepad/server.mjs",
+            "line": 741,
+            "summary": "POST /api/open: checks the path and hands it to the server's opener."
+          },
+          {
+            "id": "server-opener",
+            "label": "Server editor opener",
+            "role": "integration",
+            "path": "notepad/server.mjs",
+            "line": 430,
+            "summary": "Runs code -g, then cursor -g, then open, until one succeeds."
+          },
+          {
+            "id": "editor-cli",
+            "label": "Editor command line",
+            "role": "integration",
+            "summary": "VS Code's or Cursor's CLI, which opens the file at the line in your editor."
+          }
+        ],
+        "edges": [
+          {
+            "from": "pane",
+            "to": "pane-jump"
+          },
+          {
+            "from": "pane-jump",
+            "to": "mod-opener"
+          },
+          {
+            "from": "mod-opener",
+            "to": "project-map",
+            "label": "path · line"
+          },
+          {
+            "from": "mod-opener",
+            "to": "editor-cli",
+            "label": "code -g"
+          },
+          {
+            "from": "browser",
+            "to": "drawer-open"
+          },
+          {
+            "from": "drawer-open",
+            "to": "open-route",
+            "label": "POST"
+          },
+          {
+            "from": "open-route",
+            "to": "server-opener"
+          },
+          {
+            "from": "server-opener",
+            "to": "editor-cli",
+            "label": "code -g"
+          },
+          {
+            "from": "mod-hooks",
+            "to": "mod-opener"
+          },
+          {
+            "from": "notepad-server",
+            "to": "open-route"
+          }
+        ],
+        "at": 1791130334322
+      }
     }
   ],
   "edges": [
@@ -185,7 +763,7 @@
       "label": "arch_update"
     },
     {
-      "from": "journal",
+      "from": "mod-hooks",
       "to": "journal-files",
       "label": "day files"
     },
@@ -197,7 +775,7 @@
     {
       "from": "notepad-server",
       "to": "mod-hooks",
-      "label": "CHANGED · ASK",
+      "label": "inbox · CHANGED",
       "style": "async"
     },
     {
@@ -205,6 +783,11 @@
       "to": "notepad-server",
       "label": "REST + SSE",
       "style": "http"
+    },
+    {
+      "from": "notepad-server",
+      "to": "journal",
+      "label": "resolve days"
     },
     {
       "from": "notepad-server",
@@ -232,5 +815,5 @@
     "mod-hooks",
     "notepad-server"
   ],
-  "updatedAt": 1791041798708
+  "updatedAt": 1791129969869
 }

@@ -9,17 +9,27 @@ const entryHtml = (e, showSession, dayDate) => {
     const verb = e.refType === 'mark' ? 'Cleared mark' : 'Done'
     return `<div class="entry note-row completed" data-entry="${esc(e.id)}"><time>${time(e.ts)}</time><div><span class="icon">✓</span><span class="text">${verb}: ${inline(e.refText ?? 'an item')}</span>${from}${sessionChip}<span class="badge">${esc(e.refType ?? 'done')}</span></div></div>`
   }
+  if (e.type === 'commit') {
+    // Opening the list loads each file's added and removed lines (commitToggle).
+    const files = `<details data-commit="${esc(e.sha)}"><summary>${e.files.length} file${e.files.length > 1 ? 's' : ''}</summary><div class="commitfiles">${e.files.map(f => `<div><code class="link" data-open="${esc(f)}" title="Open in editor">${esc(f)}</code></div>`).join('')}</div></details>`
+    return `<div class="entry commit-row" data-entry="${esc(e.id)}"><time>${time(e.ts)}</time><div><span class="icon">⎇</span><span class="text">Committed <code title="${esc(e.sha)}">${esc(e.sha.slice(0, 7))}</code> ${inline(e.subject)}</span>${files}</div></div>`
+  }
   if (e.type === 'turn') {
-    const chips = e.components.map(c => `<span class="chip">${esc(label(c))}</span>`).join('')
-    const files = e.files.length ? `<details><summary>${e.files.length} file${e.files.length > 1 ? 's' : ''}${e.commands ? ` · ${e.commands} command${e.commands > 1 ? 's' : ''}` : ''}</summary>${e.files.map(f => `<div>${f.created ? '+ ' : '~ '}<code>${esc(f.path)}</code></div>`).join('')}</details>` : ''
+    const chips = e.components.map(c => `<span class="chip link" data-comp="${esc(c)}" title="Show on the diagram">${esc(label(c))}</span>`).join('')
+    // How its tests stood, and whether its files are committed yet.
+    const tests = e.tests ? `<span class="badge ${e.tests.failed ? 'bad' : 'good'}" title="${esc(e.tests.command)}">${e.tests.failed ? `${e.tests.failed} failing · ` : ''}${e.tests.passed} passed</span>` : ''
+    const ship = !e.files.length || !e.uncommitted ? ''
+      : !e.uncommitted.length ? `<span class="badge good" title="${esc((e.shipped ?? []).map(c => `${c.sha.slice(0, 7)} ${c.subject}`).join('\n'))}">shipped ${esc((e.shipped ?? []).map(c => c.sha.slice(0, 7)).join(', '))}</span>`
+      : `<span class="badge warn" title="${esc(e.uncommitted.join('\n'))}">${e.shipped?.length ? `${e.files.length - e.uncommitted.length} of ${e.files.length} committed` : 'not committed'}</span>`
+    const files = e.files.length ? `<details><summary>${e.files.length} file${e.files.length > 1 ? 's' : ''}${e.commands ? ` · ${e.commands} command${e.commands > 1 ? 's' : ''}` : ''}</summary>${e.files.map(f => `<div>${f.created ? '+ ' : '~ '}<code class="link" data-open="${esc(f.path)}" title="Open in editor">${esc(f.path)}</code></div>`).join('')}</details>` : ''
     const arch = e.arch ? `<div class="hint">Map: ${e.arch.added.length ? `added ${esc(e.arch.added.join(', '))}` : ''}${e.arch.removed.length ? ` removed ${esc(e.arch.removed.join(', '))}` : ''}</div>` : ''
-    return `<div class="entry" data-entry="${esc(e.id)}"><time>${time(e.ts)}</time><div><span class="what">${inline(e.request)}</span>${chips}${sessionChip}<ul>${e.summary.map(s => `<li>${inline(s)}</li>`).join('')}</ul>${arch}${files}</div></div>`
+    return `<div class="entry" data-entry="${esc(e.id)}"><time>${time(e.ts)}</time><div><span class="what">${inline(e.request)}</span>${chips}${sessionChip}${tests}${ship}<ul>${e.summary.map(s => `<li>${inline(s)}</li>`).join('')}</ul>${arch}${files}</div></div>`
   }
   const checkable = e.type === 'todo' || e.type === 'blocker'
   const icon = checkable ? `<input type="checkbox" class="check" data-done="${e.id}" ${e.done ? 'checked' : ''} title="${e.done ? 'Reopen' : 'Mark done'}">` : `<span class="icon">${ICON[e.type] ?? '•'}</span>`
   const why = e.why ? ` <span class="why">— because ${inline(e.why)}</span>` : ''
   const alt = e.alternatives ? ` <span class="why">(considered: ${inline(e.alternatives)})</span>` : ''
-  const chip = e.component ? `<span class="chip">${esc(label(e.component))}</span>` : ''
+  const chip = e.component ? `<span class="chip link" data-comp="${esc(e.component)}" title="Show on the diagram">${esc(label(e.component))}</span>` : ''
   const by = e.by === 'claude' ? '<span class="badge">Claude</span>' : ''
   const kind = e.type === 'note' ? '' : `<span class="badge">${e.type}</span>`
   const edited = e.editedAt ? `<span class="badge" title="Edited ${esc(new Date(e.editedAt).toLocaleString())}">edited</span>` : ''
@@ -28,8 +38,9 @@ const entryHtml = (e, showSession, dayDate) => {
 const countLine = entries => {
   const turns = entries.filter(e => e.type === 'turn').length
   const done = entries.filter(e => e.type === 'done').length
-  const notes = entries.length - turns - done
-  return entries.length ? [`${turns} turn${turns === 1 ? '' : 's'}`, `${notes} note${notes === 1 ? '' : 's'}`, done ? `${done} done` : ''].filter(Boolean).join(' · ') : ''
+  const commits = entries.filter(e => e.type === 'commit').length
+  const notes = entries.length - turns - done - commits
+  return entries.length ? [`${turns} turn${turns === 1 ? '' : 's'}`, `${notes} note${notes === 1 ? '' : 's'}`, done ? `${done} done` : '', commits ? `${commits} commit${commits === 1 ? '' : 's'}` : ''].filter(Boolean).join(' · ') : ''
 }
 
 // The sidebar, like the Claude app's: this project's sessions by title, newest
@@ -359,3 +370,13 @@ $('#copyDay').addEventListener('click', async () => {
   await navigator.clipboard.writeText(`${$('#dayTitle').textContent}\n\n${lines.join('\n')}`)
   toast('Day copied')
 })
+
+// A commit row's file list, opened: each file's added and removed lines.
+document.addEventListener('toggle', async e => {
+  const box = e.target
+  if (!(box instanceof HTMLDetailsElement) || !box.open || !box.dataset.commit || box.dataset.loaded) return
+  box.dataset.loaded = '1'
+  const found = await api(`/api/commit?sha=${encodeURIComponent(box.dataset.commit)}`).catch(() => null)
+  if (!found?.files) return
+  box.querySelector('.commitfiles').innerHTML = found.files.map(f => `<div><code class="link" data-open="${esc(f.path)}" title="Open in editor">${esc(f.path)}</code> <span class="add">+${f.added}</span> <span class="del">−${f.removed}</span></div>`).join('')
+}, true)

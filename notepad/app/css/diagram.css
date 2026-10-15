@@ -102,3 +102,21 @@
 .menu.drift .issue .btn:hover { border-color: var(--muted); background: var(--nodeFill); }
 .menu.drift .issue .btn.accent { background: var(--accent); color: #fff; border-color: var(--accent); }
 #map .m-warn { fill: #d1980b; font-size: 12px; cursor: pointer; }
+
+/* Overlays and focus */
+#map .m-ov { pointer-events: none; }
+#map .m-ov.accent { fill: var(--accent); }
+#map .m-ov.warn { fill: #d1980b; }
+#map .m-ov.good { fill: var(--link); }
+#map .m-ov.bad { fill: #c2410c; }
+#map .m-ovtext { font-size: 10px; fill: var(--muted); letter-spacing: .02em; pointer-events: none; }
+#map .dim { opacity: .16; }
+#map .m-node.picked .m-box { stroke: var(--accent); stroke-width: 2; }
+.mapwrap { position: relative; }
+.maplegend { position: absolute; left: 12px; bottom: 10px; pointer-events: none; max-width: 70%; }
+.maplegend:empty { display: none; }
+#map .m-pick { font-size: 10px; letter-spacing: .12em; fill: var(--accent); font-weight: 600; pointer-events: none; }
+.mapfocus { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 10px; max-width: calc(100% - 24px); padding: 6px 6px 6px 12px; border: 1px solid var(--accent); border-radius: 10px; background: var(--paper); color: var(--ink); font-size: 13px; box-shadow: 0 2px 10px rgba(0, 0, 0, .08); z-index: 2; }
+.mapfocus[hidden] { display: none; }
+.mapfocus span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mapfocus kbd { font-size: 10px; margin-left: 4px; }

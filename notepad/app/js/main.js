@@ -9,6 +9,8 @@ const load = async () => {
   if (searchQuery) showSearch()
   if (tab === 'diagram') { renderDiagram(); if (drawer) openDrawer(drawer.id) }
   if (tab === 'standup') renderStandup()
+  if (tab === 'timeline') renderTimeline()
+  if (tab === 'insights') renderInsights()
   if (tab === 'board' && board.underlay) { await loadUnderlay(); drawBoard() }
 }
 
@@ -16,9 +18,11 @@ const setTab = async next => {
   tab = next
   document.querySelectorAll('[data-tab]').forEach(b => b.setAttribute('aria-selected', String(b.dataset.tab === tab)))
   document.querySelectorAll('[data-view]').forEach(v => v.classList.toggle('on', v.dataset.view === tab))
-  $('#app').classList.toggle('wide', tab === 'board' || tab === 'diagram')
+  $('#app').classList.toggle('wide', tab === 'board' || tab === 'diagram' || tab === 'timeline' || tab === 'insights')
   if (tab === 'diagram') renderDiagram()
+  if (tab === 'insights') renderInsights()
   if (tab === 'standup') renderStandup()
+  if (tab === 'timeline') renderTimeline()
   if (tab === 'board') {
     renderTools()
     if (!board.id) {
@@ -32,11 +36,26 @@ const setTab = async next => {
   }
 }
 
+const showComponent = async id => {
+  await setTab('diagram')
+  await openDrawer(id)
+}
+const openFile = async (file, line) => {
+  const res = await api('/api/open', { path: file, line: Number(line) || 1 })
+  toast(res.ok ? `Opened ${file}` : `Could not open ${file}`)
+}
+
 document.addEventListener('click', async e => {
   const t = e.target
   if (t.closest('[data-tab]')) return setTab(t.closest('[data-tab]').dataset.tab)
+  // Links between views: a component opens on the diagram, a file in your editor.
+  const comp = t.closest('[data-comp]')
+  if (comp) return showComponent(comp.dataset.comp)
+  const file = !t.closest('#drawer') && t.closest('[data-open]')
+  if (file) return openFile(file.dataset.open, file.dataset.line)
   await journalClick(t)
   boardClick(t)
+  if (t.closest('[data-view="timeline"]')) return timelineClick(t)
   if (t.closest('#drawer')) return drawerClick(t)
 })
 
@@ -44,10 +63,13 @@ document.addEventListener('keydown', e => {
   if (isTyping(e) || editing) return
   const k = e.key.toLowerCase()
   const mod = e.metaKey || e.ctrlKey
-  if (!mod && !e.altKey && /^[1-4]$/.test(k)) return setTab(['journal', 'diagram', 'board', 'standup'][Number(k) - 1])
+  if (!mod && !e.altKey && /^[1-6]$/.test(k)) return setTab(['journal', 'diagram', 'board', 'standup', 'timeline', 'insights'][Number(k) - 1])
   if (e.key === 'Escape' && document.querySelector('#settingsModal.on, #helpModal.on')) return closeModals()
+  if (e.key === 'Escape' && tab === 'diagram' && mapFocus.path) return clearPath()
+  if (k === '0' && tab === 'diagram' && !mod) return resetMapView()
   if (e.key === 'Escape' && drawer && tab === 'diagram') return closeDrawer()
   if (tab === 'board') return boardKeys(e, k, mod)
+  if (tab === 'timeline') timelineKeys(e)
   if (k === 'n') { setTab('journal'); input.focus(); e.preventDefault() }
   if (e.key === '/') { setTab('journal'); $('#search').focus(); e.preventDefault() }
   if (e.key === '?') { openModal('#helpModal'); e.preventDefault() }

@@ -21,15 +21,20 @@ import { fileURLToPath } from 'node:url'
 
 import {
   buildStandup,
+  commitsFromLog,
   dateKey,
+  insightsOf,
   dayLabel,
   labelsFrom,
   newId,
   openItems,
   parseWebLines,
+  projectKey,
   resolveDays,
   resolveTag,
 } from '../hooks/journal.ts'
+import { projectRootOf } from '../hooks/project-root.ts'
+import { mapTimeline } from '../hooks/timeline.ts'
 import { createWorkspace } from './workspace.mjs'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
@@ -37,13 +42,21 @@ const arg = name => {
   const i = process.argv.indexOf(`--${name}`)
   return i > 0 ? process.argv[i + 1] : undefined
 }
-const LOGS = arg('logs')
-const PROJECT = arg('project')
+const GIVEN_LOGS = arg('logs')
+const GIVEN_PROJECT = arg('project')
 const SELF = arg('session') ?? null
-if (!LOGS || !PROJECT) {
+if (!GIVEN_LOGS || !GIVEN_PROJECT) {
   console.error('usage: server.mjs --logs <dir> --project <path>')
   process.exit(2)
 }
+// A subfolder of a project (test/, public/) is that project: its map, and the
+// journal folder beside the one given, named for the project root.
+const given = path.resolve(GIVEN_PROJECT)
+const PROJECT = await projectRootOf(given, async p => fs.existsSync(p), os.homedir())
+const LOGS =
+  PROJECT !== given && path.basename(GIVEN_LOGS) === projectKey(given)
+    ? path.join(path.dirname(GIVEN_LOGS), projectKey(PROJECT))
+    : GIVEN_LOGS
 fs.mkdirSync(LOGS, { recursive: true })
 
 // The same address every time for a project: a port from its logs folder and
@@ -96,10 +109,14 @@ const loadDays = from => {
     const web = parseWebLines(readText(path.join(LOGS, `${date}.web.jsonl`)))
     return { ...day, entries: [...(day.entries ?? []), ...web] }
   })
-  return resolveDays(days)
+  return resolveDays(days, { tracksCommits: gitState.repo })
 }
 
 const recent = () => loadDays(dateKey(Date.now() - 60 * DAY_MS))
+
+// How the map changed, step by step, over the last half year (the pane's
+// Timeline tab reads the same days).
+const timeline = () => ({ steps: mapTimeline(loadDays(dateKey(Date.now() - 180 * DAY_MS))) })
 
 // The project's sessions, newest first, from sessions/<id>.json.
 const SESSIONS = path.join(LOGS, 'sessions')
@@ -193,6 +210,41 @@ const selfOf = url => (isId(url.searchParams.get('s')) ? url.searchParams.get('s
 const append = entry => {
   fs.appendFileSync(path.join(LOGS, `${dateKey(entry.ts)}.web.jsonl`), `${JSON.stringify(entry)}\n`)
   changed()
+}
+
+// Your commits, into the journal, so each turn can say whether its files
+// shipped. Every half minute: git log for the last two weeks (merges and
+// other authors left out), and each commit not yet logged goes to its day's
+// web lines. git.json tells the mod whether this project is a git repo.
+const COMMIT_DAYS = 14
+const gitState = readJson(path.join(LOGS, 'git.json'), { repo: false })
+let knownCommits = null
+const runGit = args =>
+  new Promise(resolve => execFile('git', ['-C', PROJECT, ...args], { maxBuffer: 16 * 1024 * 1024 }, (err, out) => resolve(err ? null : String(out))))
+const recordCommits = async () => {
+  const top = await runGit(['rev-parse', '--show-toplevel'])
+  const isRepo = top !== null
+  if (isRepo !== gitState.repo) {
+    gitState.repo = isRepo
+    fs.writeFileSync(path.join(LOGS, 'git.json'), `${JSON.stringify({ repo: isRepo }, null, 2)}\n`)
+    changed()
+  }
+  if (!isRepo) return
+  knownCommits ??= new Set(
+    fs
+      .readdirSync(LOGS)
+      .filter(n => n.endsWith('.web.jsonl'))
+      .flatMap(n => parseWebLines(readText(path.join(LOGS, n))))
+      .filter(e => e.type === 'commit')
+      .map(e => e.id),
+  )
+  const email = ((await runGit(['config', 'user.email'])) ?? '').trim()
+  const log = await runGit(['log', '--no-merges', `--since=${COMMIT_DAYS}.days`, '--relative', '--name-only', '--format=%x1e%H%x1f%ct%x1f%ae%x1f%s'])
+  for (const c of commitsFromLog(log ?? '', email || undefined).reverse()) {
+    if (knownCommits.has(c.id)) continue
+    knownCommits.add(c.id)
+    append(c)
+  }
 }
 
 const state = (date, self) => {
@@ -328,6 +380,8 @@ const autoClean = () => {
 }
 setTimeout(autoClean, 30_000).unref()
 setInterval(autoClean, 86_400_000).unref()
+recordCommits().catch(() => undefined)
+setInterval(() => recordCommits().catch(() => undefined), 30_000).unref()
 
 const workspace = createWorkspace({ project: PROJECT, logs: LOGS, graph, recent })
 
@@ -520,6 +574,22 @@ const server = http.createServer(async (req, res) => {
         .filter(d => d.entries.length)
         .reverse()
       return send(res, 200, { id, days })
+    }
+    if (req.method === 'GET' && url.pathname === '/api/timeline') return send(res, 200, timeline())
+    if (req.method === 'GET' && url.pathname === '/api/insights') return send(res, 200, insightsOf(recent(), graph(), Date.now()))
+    // One commit's files with their added and removed lines (the journal's commit rows).
+    if (req.method === 'GET' && url.pathname === '/api/commit') {
+      const sha = url.searchParams.get('sha') ?? ''
+      if (!/^[0-9a-f]{7,40}$/.test(sha)) return send(res, 400, { error: 'not a commit' })
+      const out = await runGit(['show', '--numstat', '--relative', '--format=', sha])
+      if (out === null) return send(res, 404, { error: 'no such commit' })
+      const files = out.split('\n').filter(Boolean).map(l => l.split('\t')).map(([a, d, ...p]) => ({ path: p.join('\t'), added: Number(a) || 0, removed: Number(d) || 0 }))
+      return send(res, 200, { sha, files })
+    }
+    // Every file git knows in the project, for the command palette.
+    if (req.method === 'GET' && url.pathname === '/api/files') {
+      const out = await runGit(['ls-files', '--cached', '--others', '--exclude-standard'])
+      return send(res, 200, { files: (out ?? '').split('\n').filter(Boolean).slice(0, 20_000) })
     }
     if (req.method === 'GET' && url.pathname === '/api/search') return send(res, 200, search(url.searchParams.get('q') ?? ''))
     if (req.method === 'GET' && url.pathname === '/api/standups') {

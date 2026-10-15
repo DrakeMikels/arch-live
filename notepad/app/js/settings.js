@@ -79,14 +79,17 @@ $('#settingsBody').addEventListener('click', async e => {
 // Help: what each part does and every shortcut.
 const HELP = [
   ['Journal', 'Every Claude turn, with its summary in plain STE English, and your own notes, todos, blockers and decisions. Click a session in the sidebar for its whole history. Tick, untick, edit (✎ or double-click) here or in the right panel. Search every day from the box, or press /.'],
-  ['Diagram', 'The live map of the repo. Click a component to open it in place and see its parts; click a numbered part for its purpose and Explain in depth. ⌥-click marks a component; marks stay until cleared in the drawer. Pick a layout, or unlock to drag components and bend lines into your own arrangement. Export as PNG, SVG or Mermaid. ⚠ means the map may be out of date.'],
+  ['Diagram', 'The live map of the repo. Click a component to open it in place and see its parts; click a numbered part for its purpose and Explain in depth. ⌥-click marks a component; marks stay until cleared in the drawer. Pick a layout, or unlock to drag components and bend lines into your own arrangement. Export as PNG, SVG or Mermaid. ⚠ means the map may be out of date. The overlay menu tints components by recent activity, files not committed, or their last test run; hovering a component fades what it does not touch. Component chips and file names in the journal link here and to your editor.'],
   ['Board', 'A whiteboard: pen, shapes, arrows, text, code blocks and sticky notes, optionally over the diagram. Send to Claude gives Claude the picture and the exact text, in this session or another open one.'],
   ['Standup', 'Write with Claude turns the journal into meeting notes for all sessions or one. Copy for Slack, then Archive & start fresh after the meeting; History keeps every standup.'],
+  ['Insights', 'The last four weeks: turns, commits and each day’s last test run, the components and files that saw the most work, and how long todos and blockers stay open. Hover a bar for its numbers; Copy as table gives every day as Markdown.'],
+  ['Timeline', 'How the map changed, day by day: what each day added, removed, renamed or rewired, and the turns that did it. Steps marked outside a session are changes made between days (a pull, a merge or an edit by hand). Choose a step to see the map after it.'],
 ]
 const KEYS = [
-  ['1 – 4', 'Journal, Diagram, Board, Standup'], ['N', 'Write a note'], ['/', 'Search the journal'], ['⌥1 – ⌥4', 'Note, todo, blocker, decision'],
+  ['1 – 6', 'Journal, Diagram, Board, Standup, Timeline, Insights'], ['⌘K', 'Go to a component, day, standup or file, or run an action (outside a note)'],
+  ['Diagram: ⇧-click two', 'Light the path between two components (or Path to… in its panel; Esc clears)'], ['Diagram: 0', 'Reset view: clear the path, close the panel, fit the map'], ['N', 'Write a note'], ['/', 'Search the journal'], ['⌥1 – ⌥4', 'Note, todo, blocker, decision'],
   ['@', 'Tag a component in a note'], ['⌘B ⌘I ⌘E ⌘K', 'Bold, italic, code, link'], ['⌘↵', 'Save an edit'], ['Esc', 'Cancel, close'],
-  ['\\', 'Hide or show the sidebar'], ['[  ]', 'Previous or next day'], ['?', 'This help'],
+  ['\\', 'Hide or show the sidebar'], ['[  ]', 'Previous or next day'], ['↑ ↓', 'Timeline: previous or next step'], ['?', 'This help'],
   ['Board: V H P R O A L T C N E', 'Select, pan, pen, rectangle, ellipse, arrow, line, text, code, sticky, eraser'], ['Board: ⌘Z ⇧⌘Z ⌘D F', 'Undo, redo, duplicate, fit'],
 ]
 $('#helpBody').innerHTML = `${HELP.map(([t, d]) => `<section><h4>${t}</h4><div>${esc(d)}</div></section>`).join('')}<section><h4>Shortcuts</h4><table>${KEYS.map(([k, d]) => `<tr><td><kbd>${esc(k)}</kbd></td><td>${esc(d)}</td></tr>`).join('')}</table></section><section><h4>In Claude Code</h4><div>/arch shows the pane · /notepad opens this page · /n, /todo, /blocker, /decision add to the journal · /done closes one · /standup copies your standup · /arch-map re-maps · /arch-theme changes the style · /arch-export writes the diagram as SVG.</div></section>`
