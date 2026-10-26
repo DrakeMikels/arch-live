@@ -1,9 +1,26 @@
 // Starts the notepad: loads the day, switches tabs, routes clicks and keys to
 // each tab's file, and keeps the live connection. Loaded last.
 
+// In Cursor, "with Claude" and "to Claude" on buttons and hints name Cursor
+// instead: its agent runs the request, after you press Enter in its chat.
+const relabel = root => {
+  const walk = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+  for (let n = walk.nextNode(); n; n = walk.nextNode()) {
+    if (/\b(with|to) Claude\b/.test(n.nodeValue)) n.nodeValue = n.nodeValue.replace(/\bwith Claude\b/g, 'in Cursor').replace(/\bto Claude\b/g, 'to Cursor')
+  }
+}
+let relabeling = null
+const forHost = host => {
+  if (host !== 'cursor' || relabeling) return
+  relabel(document.body)
+  relabeling = new MutationObserver(changes => { for (const c of changes) for (const node of c.addedNodes) relabel(node) })
+  relabeling.observe(document.body, { childList: true, subtree: true })
+}
+
 const load = async () => {
   data = await api(`/api/state${date ? `?date=${date}` : ''}`)
   date = data.date
+  forHost(data.host)
   applyTheme(data.meta?.theme)
   renderJournal()
   if (searchQuery) showSearch()

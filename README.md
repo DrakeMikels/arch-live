@@ -25,6 +25,7 @@ The mod hooks are the hub: Claude Code calls them, they draw the pane, write the
 | Tests | `tests/*.test.ts`, run with `claude plugin test .` |
 | Notepad server | `notepad/server.mjs`, `notepad/workspace.mjs` |
 | Browser notepad | `notepad/app.html` (markup), `notepad/app/css/*.css` and `notepad/app/js/*.js`, one file per part, loaded in the order the page lists |
+| Cursor version | `cursor/install.mjs`, `cursor/scripts/*.mjs`, `hooks/cursor.ts` |
 
 Your theme lives in `~/.claude/arch-live/theme.json` and your journal in `~/.claude/arch-live/logs/<project>/`, outside every repo.
 
@@ -35,3 +36,7 @@ Claude Code loads it from this folder through `CLAUDE_CODE_PLUGIN_DIRS` in `~/.c
 ```bash
 claude plugin validate .
 ```
+
+### Cursor
+
+The notepad, map and journal also work in Cursor, through an MCP server and Cursor hooks instead of the side pane: `node cursor/install.mjs`, then reload Cursor. See [cursor/README.md](cursor/README.md).

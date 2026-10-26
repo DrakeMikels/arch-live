@@ -95,13 +95,18 @@ export const boardPrompt = (title: string, png: string, md: string, note: string
     ...(note ? [] : ['', 'Tell me briefly what you make of it, then ask what I want to do with it.']),
   ].join('\n')
 
+// How a standup is written, whoever hands Claude the journal.
+export const standupInstructions = (scope: string, since: number, tool: string = STANDUP_TOOL) => [
+  `Write my standup notes for this morning's engineering meeting from my arch-live work journal (${scope}, since ${dayLabel(since)} ${timeLabel(since)}).`,
+  'Markdown, in this order. Short plain bullets about outcomes, not activity. Group related work into one bullet and start it with the area in bold when that helps. No file paths unless they matter to the team.',
+  '## Accomplished\n## In progress\n## Blockers (write "None" when there are none)\n## Next\n## Decisions (only when there are any)\n## Heads-up (only when useful: risks, asks, things others should know)',
+  'Leave out noise: repeated or test notes, and checks of the tooling itself, unless that was the work. When the journal is unclear, you may read `git log` in the project for the same window.',
+  `Then call ${tool} once with the Markdown and scope "${scope}". Reply with one short line when done.`,
+]
+
 export const standupPrompt = (scope: string, since: number, brief: string, detail: string) =>
   [
-    `Write my standup notes for this morning's engineering meeting from my arch-live work journal (${scope}, since ${dayLabel(since)} ${timeLabel(since)}).`,
-    'Markdown, in this order. Short plain bullets about outcomes, not activity. Group related work into one bullet and start it with the area in bold when that helps. No file paths unless they matter to the team.',
-    '## Accomplished\n## In progress\n## Blockers (write "None" when there are none)\n## Next\n## Decisions (only when there are any)\n## Heads-up (only when useful: risks, asks, things others should know)',
-    'Leave out noise: repeated or test notes, and checks of the tooling itself, unless that was the work. When the journal is unclear, you may read `git log` in the project for the same window.',
-    `Then call ${STANDUP_TOOL} once with the Markdown and scope "${scope}". Reply with one short line when done.`,
+    ...standupInstructions(scope, since),
     '',
     'Journal brief:',
     '',

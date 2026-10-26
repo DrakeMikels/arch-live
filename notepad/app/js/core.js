@@ -7,7 +7,21 @@ const token = new URLSearchParams(location.search).get('t')
 const forSession = new URLSearchParams(location.search).get('s') ?? ''
 const $ = s => document.querySelector(s)
 const api = (p, body) =>
-  fetch(`${p}${p.includes('?') ? '&' : '?'}t=${token}${forSession ? `&s=${encodeURIComponent(forSession)}` : ''}`, body ? { method: 'POST', headers: { 'content-type': 'application/json', 'x-notepad-token': token }, body: JSON.stringify(body) } : {}).then(r => r.json())
+  fetch(`${p}${p.includes('?') ? '&' : '?'}t=${token}${forSession ? `&s=${encodeURIComponent(forSession)}` : ''}`, body ? { method: 'POST', headers: { 'content-type': 'application/json', 'x-notepad-token': token }, body: JSON.stringify(body) } : {})
+    .then(r => r.json())
+    .then(j => { if (j?.cursorPrompt) toCursor(j.cursorPrompt); return j })
+// In Cursor, a request for the agent comes back as a prompt: it opens in
+// Cursor's chat through a prompt link (press Enter there to run it), and is
+// copied too; one too long for a link (8,000 characters) is only copied.
+// Cursor's link reader drops text after an "&", so none goes in.
+const toCursor = async prompt => {
+  try { await navigator.clipboard.writeText(prompt) } catch {}
+  const link = `cursor://anysphere.cursor-deeplink/prompt?text=${encodeURIComponent(prompt.replace(/&/g, 'and'))}`
+  const fits = link.length <= 8000
+  if (fits) location.href = link
+  // After the caller's own toast, so this one is what shows.
+  setTimeout(() => toast(fits ? 'Opened in Cursor: press Enter in its chat to run it (also copied)' : 'Copied the request: paste it into Cursor’s chat and press Enter'), 80)
+}
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c])
 const inline = s => esc(s)
   .replace(/`([^`]+)`/g, '<code>$1</code>')

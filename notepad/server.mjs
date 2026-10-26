@@ -45,6 +45,15 @@ const arg = name => {
 const GIVEN_LOGS = arg('logs')
 const GIVEN_PROJECT = arg('project')
 const SELF = arg('session') ?? null
+// In Cursor (--host cursor) no mod reads the notepad's requests: each one
+// comes back to the page as a prompt for Cursor's chat (hooks/cursor.ts).
+const HOST = arg('host') ?? 'claude'
+const cursorKit = HOST === 'cursor'
+  ? await (async () => {
+      await import('./ts-register.mjs')
+      return { ...(await import('../hooks/cursor.ts')), ...(await import('../hooks/theme.ts')) }
+    })()
+  : null
 if (!GIVEN_LOGS || !GIVEN_PROJECT) {
   console.error('usage: server.mjs --logs <dir> --project <path>')
   process.exit(2)
@@ -200,10 +209,28 @@ const changed = () => process.stdout.write('CHANGED\n')
 // board, write the standup): a line in that session's inbox, which it reads.
 const isId = v => typeof v === 'string' && /^[\w-]{1,80}$/.test(v)
 const ask = (request, target) => {
+  if (cursorKit) return handOff(request)
   if (!isId(target)) return process.stdout.write(`ASK ${JSON.stringify(request)}\n`)
   fs.mkdirSync(path.join(LOGS, 'inbox'), { recursive: true })
   fs.appendFileSync(path.join(LOGS, 'inbox', `${target}.jsonl`), `${JSON.stringify(request)}\n`)
 }
+// Cursor: the prompt for the request, for the page to open in Cursor's chat.
+// Resetting the style needs no prompt: it is done here.
+const handOff = request => {
+  if (request.kind === 'theme-default') {
+    fs.mkdirSync(path.dirname(THEME_FILE), { recursive: true })
+    fs.writeFileSync(THEME_FILE, `${JSON.stringify(cursorKit.DEFAULT_THEME, null, 2)}\n`)
+    const m = meta()
+    const t = cursorKit.DEFAULT_THEME
+    fs.writeFileSync(path.join(LOGS, 'meta.json'), `${JSON.stringify({ ...m, theme: { light: t.light, dark: t.dark, fonts: t.fonts, mode: t.mode, name: t.name ?? null, source: null } }, null, 2)}\n`)
+    changed()
+    return {}
+  }
+  const prompt = cursorKit.handoffPrompt(request, graph(), PROJECT, standupSince(Date.now()))
+  return prompt ? { cursorPrompt: prompt } : {}
+}
+const THEME_FILE = path.join(os.homedir(), '.claude', 'arch-live', 'theme.json')
+
 // The session a request is for: the page's `s`, else the one that started us.
 const selfOf = url => (isId(url.searchParams.get('s')) ? url.searchParams.get('s') : SELF)
 
@@ -267,6 +294,8 @@ const state = (date, self) => {
     day,
     self,
     project: PROJECT,
+    // Which app hands the notepad's requests to an agent: 'claude' or 'cursor'.
+    host: HOST,
     sessions: namedSessions(),
     sessionCounts: days.flatMap(d => d.entries).reduce((acc, e) => ({ ...acc, [e.session ?? '']: (acc[e.session ?? ''] ?? 0) + 1 }), {}),
     open: openItems(days),
@@ -693,30 +722,26 @@ const server = http.createServer(async (req, res) => {
       // The mod builds the standup prompt itself, from the same journal.
       if (body.kind === 'standup') {
         const one = isId(body.session) ? body.session : null
-        ask({ kind: 'standup', scope: one ? 'session' : 'all', ...(one ? { session: one } : {}), names: sessionNames() }, self)
-        return send(res, 200, { ok: true })
+        const handed = ask({ kind: 'standup', scope: one ? 'session' : 'all', ...(one ? { session: one } : {}), names: sessionNames() }, self)
+        return send(res, 200, { ok: true, ...handed })
       }
       if (body.kind === 'map') {
-        ask({ kind: 'map' }, self)
-        return send(res, 200, { ok: true })
+        return send(res, 200, { ok: true, ...ask({ kind: 'map' }, self) })
       }
       if (body.kind === 'brand' && typeof body.url === 'string' && /^(https?:\/\/)?[^\s/]+\.[^\s]+$/i.test(body.url.trim())) {
-        ask({ kind: 'brand', url: body.url.trim().slice(0, 300) }, self)
-        return send(res, 200, { ok: true })
+        return send(res, 200, { ok: true, ...ask({ kind: 'brand', url: body.url.trim().slice(0, 300) }, self) })
       }
       if (body.kind === 'theme-default') {
-        ask({ kind: 'theme-default' }, self)
-        return send(res, 200, { ok: true })
+        return send(res, 200, { ok: true, ...ask({ kind: 'theme-default' }, self) })
       }
       if ((body.kind === 'breakdown' || body.kind === 'explain') && isId(body.component)) {
-        ask({ kind: body.kind, component: body.component, ...(body.kind === 'explain' && isId(body.part) ? { part: body.part } : {}) }, self)
-        return send(res, 200, { ok: true })
+        return send(res, 200, { ok: true, ...ask({ kind: body.kind, component: body.component, ...(body.kind === 'explain' && isId(body.part) ? { part: body.part } : {}) }, self) })
       }
       if (body.kind !== 'describe' || typeof body.component !== 'string') return send(res, 400, { error: 'unknown request' })
       const found = await workspace.component(body.component)
       const missing = (found?.files ?? []).filter(f => !f.summary || f.isStale).map(f => f.path).slice(0, 40)
-      ask({ kind: 'describe', component: body.component, label: found?.node.label ?? body.component, files: missing }, self)
-      return send(res, 200, { ok: true, files: missing.length })
+      const handed = ask({ kind: 'describe', component: body.component, label: found?.node.label ?? body.component, files: missing }, self)
+      return send(res, 200, { ok: true, files: missing.length, ...handed })
     }
     if (req.method === 'POST' && url.pathname === '/api/session') {
       const { id, name } = await readBody(req)
@@ -756,16 +781,17 @@ const server = http.createServer(async (req, res) => {
       fs.writeFileSync(`${base}.png`, Buffer.from(png, 'base64'))
       fs.writeFileSync(`${base}.md`, String(body.md ?? ''))
       const target = isId(body.target) ? body.target : self
-      ask({
+      const handed = ask({
         kind: 'board',
         title: String(body.title ?? 'Board').slice(0, 120),
         png: `${base}.png`,
+        mdFile: `${base}.md`,
         md: String(body.md ?? '').slice(0, 60_000),
         note: String(body.note ?? '').slice(0, 4000),
         target,
         targetName: sessionNames()[target] ?? undefined,
       }, target)
-      return send(res, 200, { ok: true, png: `${base}.png` })
+      return send(res, 200, { ok: true, png: `${base}.png`, ...handed })
     }
     if (req.method === 'POST' && url.pathname === '/api/done') {
       const { ref } = await readBody(req)
